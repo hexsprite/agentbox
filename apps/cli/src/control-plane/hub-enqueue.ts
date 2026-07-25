@@ -49,6 +49,26 @@ export async function getHubJob(target: HubTarget, jobId: string): Promise<Creat
   return (await res.json()) as CreateJobRow;
 }
 
+/**
+ * Recent jobs on the control box's create queue, newest first.
+ *
+ * This is a different queue from the PC's local `~/.agentbox/queue/`: with a
+ * control box configured, background `-i` cloud runs are enqueued HERE, so the
+ * local queue alone is an incomplete picture of what's running.
+ */
+export async function listHubJobs(target: HubTarget): Promise<CreateJobRow[]> {
+  const base = target.url.replace(/\/+$/, '');
+  const f = target.fetchImpl ?? fetch;
+  const res = await f(`${base}/remote/boxes`, {
+    headers: { Authorization: `Bearer ${target.adminToken}` },
+  });
+  if (!res.ok) throw new Error(`list jobs failed: ${res.status} ${await safeText(res)}`);
+  // Tolerate a 200 that isn't the shape we expect (a proxy's interstitial, a
+  // hub mid-upgrade): render an empty queue rather than iterating `undefined`.
+  const body = (await res.json()) as { jobs?: unknown };
+  return Array.isArray(body.jobs) ? (body.jobs as CreateJobRow[]) : [];
+}
+
 export interface PollOptions {
   intervalMs?: number;
   /** Give up after this long. Default 30 min (a real cloud create can be slow). */

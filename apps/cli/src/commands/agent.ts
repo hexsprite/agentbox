@@ -29,6 +29,10 @@ import { resolveDriveSession } from '../lib/drive/session.js';
 import { sendKey, sendLiteral } from '../lib/drive/tmux.js';
 import { providerForBox } from '../provider/registry.js';
 import { waitForEvent, WaitTimeoutError } from '../lib/wait/events.js';
+import { resolveBoxPromptSource, type BoxPromptSource } from '../control-plane/box-plane.js';
+import { resolveCustodyTarget } from './control-plane.js';
+import { loadEffectiveConfig } from '@agentbox/config';
+import { remoteHubConfigured } from '../control-plane/remote-hub.js';
 import { handleLifecycleError } from './_errors.js';
 
 const DEFAULT_WAIT_TIMEOUT_MS = 5 * 60 * 1000;
@@ -179,25 +183,62 @@ const agentApprovalsCommand = new Command('approvals')
   .action(async (boxRef: string | undefined, opts: ApprovalsOpts) => {
     try {
       const box = await resolveBoxOrExit(boxRef);
-      const relayUrl = (await ensureRelay()).hostUrl;
+      // A box created against a control box parks its host-action approvals
+      // THERE, not on this laptop's relay — ask the one it actually registered
+      // with, or a blocked box reads as "nothing pending".
+      const source = await resolveBoxPromptSource(box);
+      // Only a local-relay box needs the host daemon running; a control-plane
+      // box's mailbox is remote, and starting a local relay for it is pointless.
+      if (!source.remote) await ensureRelay();
       const waitMs =
         opts.wait !== undefined ? parsePositiveInt(opts.wait, '--wait') : undefined;
 
-      let rows = await gatherApprovals(relayUrl, box);
-      if (waitMs !== undefined && rows.length === 0) {
+      let gathered = await gatherApprovals(source, box);
+      if (waitMs !== undefined && gathered.rows.length === 0) {
         const start = Date.now();
-        while (rows.length === 0 && Date.now() - start < waitMs) {
+        while (gathered.rows.length === 0 && Date.now() - start < waitMs) {
           await sleep(Math.min(500, waitMs - (Date.now() - start)));
-          rows = await gatherApprovals(relayUrl, box);
+          gathered = await gatherApprovals(source, box);
         }
       }
+      const rows = gathered.rows;
 
       if (opts.json === true) {
+        // Array shape is a contract (orchestration reads it) — keep stdout pure
+        // and put the degraded-mailbox warning on stderr.
+        if (gathered.relayError !== undefined) {
+          process.stderr.write(
+            `warning: could not read the ${source.remote ? 'control box' : 'relay'} approval mailbox (${gathered.relayError}); host-action rows may be missing\n`,
+          );
+        }
         process.stdout.write(JSON.stringify(rows) + '\n');
+        if (gathered.relayError !== undefined) process.exitCode = 1;
         return;
       }
+      if (gathered.relayError !== undefined) {
+        // The in-TUI rows below are still trustworthy — they come from the box's
+        // own status — so show them, but never let a missing mailbox read as
+        // "nothing pending".
+        log.warn(
+          `could not read the ${source.remote ? 'control box' : 'relay'} approval mailbox (${gathered.relayError}) — ` +
+            'host-action approvals are not shown.',
+        );
+        process.exitCode = 1;
+      }
       if (rows.length === 0) {
-        log.info('nothing pending for this box (no relay approvals, agent not parked on a prompt)');
+        // Don't claim "nothing pending" when we couldn't actually reach the
+        // mailbox — an empty list is only meaningful if we got an answer.
+        if (source.unauthenticatedPlane !== undefined) {
+          log.warn(
+            `this box's approvals live on ${source.unauthenticatedPlane}, but no admin token is available here — ` +
+              'set AGENTBOX_RELAY_ADMIN_TOKEN (or run `agentbox hub setup`) to see them.',
+          );
+          process.exitCode = 1;
+          return;
+        }
+        if (gathered.relayError === undefined) {
+          log.info('nothing pending for this box (no relay approvals, agent not parked on a prompt)');
+        }
         return;
       }
       for (const row of rows) {
@@ -240,28 +281,75 @@ const agentApproveCommand = new Command('approve')
     }
   });
 
-/** Answer a relay host-action prompt by its UUID (the #60 path). */
+/**
+ * Answer a relay host-action prompt by its UUID (the #60 path).
+ *
+ * Unlike `approvals`, this takes only an id — no box to resolve a plane from.
+ * Prompt ids are UUIDs, so trying both mailboxes is unambiguous: the local relay
+ * first (the common case, and free), then the configured control box, which is
+ * where a hub box's approvals actually live. Without the fallback, answering a
+ * hub box's prompt from the CLI is simply impossible.
+ */
 async function approveRelay(id: string, opts: ApproveOpts): Promise<void> {
-  const relayUrl = (await ensureRelay()).hostUrl;
   const cancelled = opts.cancel === true;
   const answer: 'y' | 'n' = opts.deny === true || cancelled ? 'n' : 'y';
-  const url = new URL('/admin/prompts/answer', relayUrl);
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ id, answer, cancelled: cancelled || undefined }),
-  });
-  // 204 = resolved; 404 = already answered/expired (idempotent — the
-  // orchestrator treats both as "done").
-  if (res.status === 204) {
+  const body = JSON.stringify({ id, answer, cancelled: cancelled || undefined });
+
+  const post = async (base: string, token?: string): Promise<number> => {
+    const res = await fetch(new URL('/admin/prompts/answer', base), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body,
+    });
+    return res.status;
+  };
+
+  const relayUrl = (await ensureRelay()).hostUrl;
+  let status = await post(relayUrl);
+  // 204 = resolved; 404 = not here (or already answered/expired).
+  if (status === 204) {
     log.success(`approval ${id}: ${answer === 'y' ? 'approved' : 'denied'}`);
     return;
   }
-  if (res.status === 404) {
+  if (status === 404) {
+    const target = await resolveCustodyTarget(undefined, { quiet: true });
+    if (target) {
+      status = await post(target.url, target.adminToken).catch(() => 0);
+      if (status === 204) {
+        log.success(
+          `approval ${id}: ${answer === 'y' ? 'approved' : 'denied'} (on the control box)`,
+        );
+        return;
+      }
+      if (status !== 404) {
+        // `post` maps a transport failure to 0 — report that as unreachable
+        // rather than as a nonsensical "HTTP 0".
+        log.error(
+          status === 0
+            ? `could not reach the control box at ${target.url} to answer ${id}`
+            : `control box /admin/prompts/answer: HTTP ${String(status)}`,
+        );
+        process.exit(1);
+      }
+    } else {
+      // A control box we can't ask is not evidence the prompt is gone — saying
+      // "already resolved" here would send you looking for the wrong problem.
+      const cfg = await loadEffectiveConfig(process.cwd()).catch(() => null);
+      if (cfg && remoteHubConfigured(cfg.effective)) {
+        log.error(
+          `not found on this host's relay, and the control box could not be asked (no admin token).\n` +
+            'Set AGENTBOX_RELAY_ADMIN_TOKEN (or run `agentbox hub setup`), or answer it with `agentbox hub prompts answer`.',
+        );
+        process.exit(1);
+      }
+    }
     log.info(`approval ${id} already resolved (or expired)`);
     return;
   }
-  log.error(`relay /admin/prompts/answer: HTTP ${String(res.status)}`);
+  log.error(`relay /admin/prompts/answer: HTTP ${String(status)}`);
   process.exit(1);
 }
 
@@ -367,22 +455,44 @@ type ApprovalRow =
   | { id: string; kind: 'question'; message: string; options: string[] }
   | { id: string; kind: 'permission'; message: string; state: string };
 
-/** Merge relay host-action prompts with the box's current in-TUI block (if any). */
-async function gatherApprovals(relayUrl: string, box: BoxRecord): Promise<ApprovalRow[]> {
-  const rows: ApprovalRow[] = [];
+interface GatheredApprovals {
+  rows: ApprovalRow[];
+  /** Set when the relay mailbox couldn't be read; its rows are missing, not absent. */
+  relayError?: string;
+}
 
-  const relay = await fetchRelayApprovals(relayUrl, box.id);
-  for (const ev of relay) {
-    rows.push({
-      id: ev.id,
-      kind: 'host-action',
-      command: ev.context?.command,
-      argv: ev.context?.argv,
-      cwd: ev.context?.cwd,
-      message: ev.message,
-      detail: ev.detail,
-      defaultAnswer: ev.defaultAnswer,
-    });
+/**
+ * Merge relay host-action prompts with the box's current in-TUI block (if any).
+ *
+ * The relay half is allowed to fail without taking the command down. It used to
+ * be a loopback call that only failed if the local daemon was broken; for a hub
+ * box it is a WAN request to the control box, and a blip there must not hide the
+ * in-TUI plan/question/permission rows, which come from the box's own status and
+ * are entirely independent.
+ */
+async function gatherApprovals(
+  source: BoxPromptSource,
+  box: BoxRecord,
+): Promise<GatheredApprovals> {
+  const rows: ApprovalRow[] = [];
+  let relayError: string | undefined;
+
+  try {
+    const relay = await fetchRelayApprovals(source, box.id);
+    for (const ev of relay) {
+      rows.push({
+        id: ev.id,
+        kind: 'host-action',
+        command: ev.context?.command,
+        argv: ev.context?.argv,
+        cwd: ev.context?.cwd,
+        message: ev.message,
+        detail: ev.detail,
+        defaultAnswer: ev.defaultAnswer,
+      });
+    }
+  } catch (err) {
+    relayError = err instanceof Error ? err.message : String(err);
   }
 
   const claude = (await readBoxStatus(box))?.claude;
@@ -407,13 +517,18 @@ async function gatherApprovals(relayUrl: string, box: BoxRecord): Promise<Approv
       });
     }
   }
-  return rows;
+  return { rows, relayError };
 }
 
-async function fetchRelayApprovals(relayUrl: string, boxId: string): Promise<PromptAskEvent[]> {
-  const url = new URL('/admin/prompts', relayUrl);
+async function fetchRelayApprovals(
+  source: BoxPromptSource,
+  boxId: string,
+): Promise<PromptAskEvent[]> {
+  const url = new URL('/admin/prompts', source.baseUrl);
   url.searchParams.set('boxId', boxId);
-  const res = await fetch(url);
+  const res = await fetch(url, {
+    headers: source.authToken ? { Authorization: `Bearer ${source.authToken}` } : {},
+  });
   if (!res.ok) throw new Error(`relay /admin/prompts: HTTP ${String(res.status)}`);
   const body = (await res.json()) as { prompts?: PromptAskEvent[] };
   return body.prompts ?? [];

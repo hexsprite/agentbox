@@ -37,6 +37,11 @@ import {
   type ListedBox,
 } from '@agentbox/sandbox-docker';
 import { hostOpenCommand, readState } from '@agentbox/sandbox-core';
+import { resolveBoxPromptSource } from '../control-plane/box-plane.js';
+import { listBoxesMerged } from '../control-plane/list-merged.js';
+import type { MergedBox } from '../control-plane/hub-merge.js';
+import { tryAutoAdopt } from '../control-plane/auto-adopt.js';
+import { reapOnControlBox } from '../control-plane/reap.js';
 import type { BoxRecord } from '@agentbox/core';
 import { resolveBoxOrExit } from '../box-ref.js';
 import { resolveClaudeAuth } from '../auth.js';
@@ -158,15 +163,12 @@ export const dashboardCommand = new Command('dashboard')
 
       const project = await findProjectRoot(process.cwd());
       let showAll = !opts.project; // default: every box globally; -p scopes to cwd project
-      const full = await listBoxes();
+      const full = (await listBoxesMerged()).boxes;
       const scoped0 = scoped(showAll, project.root, full);
 
       let initialId: string;
       if (idOrName !== undefined) {
         const picked = await resolveBoxOrExit(idOrName);
-        // Cloud boxes are surfaced read-only in the sidebar — selecting one
-        // shows a "live panels are docker-only" placeholder via
-        // resolveTarget. Don't refuse the ref here.
         initialId = picked.id;
         if (!scoped0.some((b) => b.id === picked.id)) showAll = true; // widen so it shows
       } else if (scoped0.length === 0) {
@@ -179,13 +181,43 @@ export const dashboardCommand = new Command('dashboard')
       const newBoxEntry: SidebarBox = { id: NEW_BOX_ID, name: NEW_BOX_LABEL, state: 'new' };
       const listCandidates = async (): Promise<SidebarBox[]> => [
         newBoxEntry,
-        ...scoped(showAll, project.root, await listBoxes()).map(toSidebar),
+        ...scoped(showAll, project.root, (await listBoxesMerged()).boxes).map(toSidebar),
       ];
+
+      /**
+       * Adopt a box that exists only on the control box, so the panels + actions
+       * below have a local record to drive. Selecting the row is the natural
+       * trigger: everything downstream (`loadBoxRecord`, lifecycle, endpoints)
+       * needs `state.json`. Returns null when adoption isn't possible, and the
+       * caller shows a read-only placeholder instead.
+       */
+      const ensureAdopted = async (box: MergedBox): Promise<ListedBox | null> => {
+        if (box.needsAdopt !== true) return box;
+        const adopted = await tryAutoAdopt(box.name, process.cwd());
+        if (adopted === null || adopted === 'unreachable') return null;
+        return (await listBoxes()).find((b) => b.id === adopted.id) ?? null;
+      };
 
       const resolveTarget = async (boxId: string): Promise<RightTarget> => {
         if (boxId === NEW_BOX_ID) return { kind: 'create-menu', where: project.root };
-        const box = (await listBoxes()).find((b) => b.id === boxId);
-        if (!box) return { kind: 'placeholder', lines: ['', '  box not found'] };
+        const merged = (await listBoxesMerged()).boxes.find((b) => b.id === boxId);
+        if (!merged) return { kind: 'placeholder', lines: ['', '  box not found'] };
+        const box = await ensureAdopted(merged);
+        if (!box) {
+          // `tryAutoAdopt` returns null for several reasons — control box down,
+          // no admin token, or it genuinely doesn't know this box — and doesn't
+          // say which. Don't assert a cause we haven't established; name the
+          // command that reports the real one.
+          return {
+            kind: 'placeholder',
+            lines: [
+              '',
+              `  box ${merged.name} lives on the control box and couldn't be adopted here.`,
+              '  Until it is, it can\'t be driven from this machine.',
+              `  Retry (and see why) with: agentbox hub adopt ${merged.name}`,
+            ],
+          };
+        }
         if (box.state === 'paused' || box.state === 'stopped') {
           return { kind: 'lifecycle-menu', state: box.state };
         }
@@ -631,11 +663,19 @@ export const dashboardCommand = new Command('dashboard')
         await stopBox(boxId);
       };
 
-      const destroyBoxAction = async (boxId: string): Promise<void> => {
+      const destroyBoxAction = async (boxId: string): Promise<string | void> => {
         const record = await loadBoxRecord(boxId);
         if ((record.provider ?? 'docker') !== 'docker') {
           const provider = await providerForBox(record);
           await provider.destroy(record);
+          // Same reap `agentbox destroy` does — destroying from the TUI must not
+          // leave the registration behind that the CLI path cleans up. Report a
+          // failed reap the way the CLI warns about it, or the box is gone
+          // locally while its hub registration silently survives.
+          const reaped = await reapOnControlBox(record);
+          if (reaped === 'unreachable') {
+            return `control box unreachable; run: agentbox hub boxes rm ${record.id}`;
+          }
           return;
         }
         await destroyBox(boxId);
@@ -645,10 +685,32 @@ export const dashboardCommand = new Command('dashboard')
         {
           ptySpawn,
           termCtor,
-          // Host-side loopback URL the per-box SSE subscriptions connect to.
-          // The relay binds 0.0.0.0; loopback is the admin/* path's required
-          // source. Same constant the wrapped-pty wrappers use.
+          // Default relay for the per-box SSE subscriptions: this host's own
+          // loopback daemon, which the admin/* gate accepts on source alone.
           relayBaseUrl: `http://127.0.0.1:${String(DEFAULT_RELAY_PORT)}`,
+          // ...but a box created against a control box keeps its approvals
+          // there, so resolve per box and fall back to the above.
+          //
+          // Resolved from the MERGED listing, not local state: the sidebar now
+          // includes rows that exist only on the control box, and those are
+          // exactly the ones whose approvals are remote. Looking them up
+          // locally would miss them and silently subscribe to loopback, so
+          // their approval marker would never light until they were adopted.
+          relaySourceFor: async (boxId) => {
+            const box = (await listBoxesMerged()).boxes.find((b) => b.id === boxId);
+            if (!box) return null;
+            const source = await resolveBoxPromptSource(box);
+            return {
+              baseUrl: source.baseUrl,
+              authToken: source.authToken,
+              // The CLI paths warn on stderr here; a TUI owns the screen, so
+              // hand it to the compositor to show in the alert band instead.
+              warning:
+                source.unauthenticatedPlane !== undefined
+                  ? `approvals live on ${source.unauthenticatedPlane} but no admin token is available here`
+                  : undefined,
+            };
+          },
           listCandidates,
           resolveTarget,
           startClaude,

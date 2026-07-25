@@ -2,14 +2,15 @@ import { log } from '@clack/prompts';
 import { execa } from 'execa';
 import { findProjectRoot } from '@agentbox/config';
 import type { AgentActivityState } from '@agentbox/ctl';
-import { listBoxes, type ListedBox } from '@agentbox/sandbox-docker';
+import type { ListedBox } from '@agentbox/sandbox-docker';
 import { Command } from 'commander';
 import { pathToFileURL } from 'node:url';
 import { boxLabel } from '../box-label.js';
 import { hyperlink } from '../hyperlink.js';
 import { applyLiveCloudStates } from '../lib/cloud-state.js';
-import { cacheAge, fetchHubListing, type HubListing } from '../control-plane/hub-list.js';
-import { mergeHubBoxes, type MergedBox } from '../control-plane/hub-merge.js';
+import { cacheAge, type HubListing } from '../control-plane/hub-list.js';
+import type { MergedBox } from '../control-plane/hub-merge.js';
+import { listBoxesMerged } from '../control-plane/list-merged.js';
 import { normalizeOriginUrl } from '../control-plane/hub-adopt.js';
 import { withWatchOptions, watchRender, type WatchableOptions } from '../watch.js';
 
@@ -383,9 +384,7 @@ async function scopedBoxes(
   all: boolean,
   live: boolean,
 ): Promise<{ boxes: MergedBox[]; projectRoot: string; scoped: boolean; hub: HubListing | null }> {
-  const local = await listBoxes();
-  const hub = await fetchHubListing().catch(() => null);
-  const boxes = mergeHubBoxes(local, hub ? hub.registrations : null, { stale: hub?.stale });
+  const { boxes, hub } = await listBoxesMerged();
   if (all) {
     // Default: cloud state is the fast persisted `cloud.lastState` from
     // listBoxes. `--live` overrides it with an authoritative SDK probe.
@@ -424,7 +423,7 @@ async function buildListText(all: boolean, live: boolean): Promise<string> {
   const note =
     hub?.stale === true
       ? hub.reason === 'no-token'
-        ? '\ncontrol box configured but no admin token — hub boxes not shown. Run `agentbox control-plane setup`, or set AGENTBOX_RELAY_ADMIN_TOKEN.'
+        ? '\ncontrol box configured but no admin token — hub boxes not shown. Run `agentbox hub setup`, or set AGENTBOX_RELAY_ADMIN_TOKEN.'
         : hub.fetchedAt !== undefined
           ? `\ncontrol box unreachable — hub boxes as of ${cacheAge(hub.fetchedAt)}`
           : '\ncontrol box unreachable — hub boxes not shown'

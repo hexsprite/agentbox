@@ -127,6 +127,17 @@ export async function handleRemoteBoxesRequest(
     return { status: 202, body: { jobId: id } };
   }
 
+  // The queue's own listing. Without it the create queue is addressable only by
+  // job id, so a PC that enqueued a background run can't see what else is in
+  // flight — `agentbox queue list` would show its local jobs and nothing else.
+  if (req.method === 'GET' && req.path === REMOTE_BOXES_PREFIX) {
+    if (!store.listCreateJobs) {
+      return { status: 501, body: { error: 'create-job queue not available on this store' } };
+    }
+    const jobs = await store.listCreateJobs({ limit: 100 });
+    return { status: 200, body: { jobs } };
+  }
+
   if (req.method === 'GET' && req.path.startsWith(`${REMOTE_BOXES_PREFIX}/`)) {
     if (!store.getCreateJob) {
       return { status: 501, body: { error: 'create-job queue not available on this store' } };
@@ -139,7 +150,7 @@ export async function handleRemoteBoxesRequest(
   // Reap a control-plane box's state from the control box: registration + status
   // + its SSH-key custody subtree. NOT the cloud resource — that teardown needs
   // provider creds + a reconstructed BoxRecord (the hub backend does it when it
-  // can). The PC drives this via `control-plane boxes rm`; the hub UI's Destroy
+  // can). The PC drives this via `hub boxes rm`; the hub UI's Destroy
   // button reaps a Store-registered box the same way.
   if (req.method === 'DELETE' && req.path.startsWith(`${REMOTE_BOXES_PREFIX}/`)) {
     const boxId = decodeURIComponent(req.path.slice(`${REMOTE_BOXES_PREFIX}/`.length));

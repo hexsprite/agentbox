@@ -86,6 +86,13 @@ export interface CompositorDeps {
    *  (legacy callers) the compositor skips prompt subscriptions entirely
    *  — the dashboard still works, just without relay-prompt overlay. */
   relayBaseUrl?: string;
+  /** Per-box override of {@link relayBaseUrl}. A box created against a control
+   *  box keeps its approvals THERE, so one global URL would subscribe every row
+   *  to this laptop's relay and silently miss them. Returns the box's own relay
+   *  + bearer; falling back to `relayBaseUrl` when it resolves nothing. */
+  relaySourceFor?: (
+    boxId: string,
+  ) => Promise<{ baseUrl: string; authToken?: string; warning?: string } | null>;
   /** Scoped + sorted candidate boxes (same order the sidebar renders). */
   listCandidates: () => Promise<SidebarBox[]>;
   /** What the right pane should show for a box (attach argv / menu / message). */
@@ -110,7 +117,10 @@ export interface CompositorDeps {
   /** Stop a running box. */
   stopBox: (boxId: string) => Promise<void>;
   /** Destroy a box (container + volumes + record). Irreversible. */
-  destroyBox: (boxId: string) => Promise<void>;
+  /** Destroy the box. May return a short note (e.g. a control-box reap that
+   *  couldn't be completed) to append to the confirmation flash — the TUI owns
+   *  the screen, so an action's own `log.warn` would be invisible here. */
+  destroyBox: (boxId: string) => Promise<string | void>;
   /** Host-side actions for the selected box; return a short status message. */
   openScreen: (boxId: string) => Promise<string>;
   openCode: (boxId: string) => Promise<string>;
@@ -128,6 +138,26 @@ const RESIZE_DEBOUNCE_MS = 120;
 const LEADER_LINGER_MS = 1500;
 /** Spinner advance cadence while a box has an active relay notice. */
 const NOTICE_SPINNER_MS = 120;
+/**
+ * Placeholder held in `promptStreams` while a box's relay source is being
+ * resolved, so the every-second poll can't open a second stream for the same
+ * box. Closing it is a no-op.
+ *
+ * A FRESH object per attempt, never a shared singleton: a box can leave and
+ * re-enter the list mid-resolve (the dispose loop drops the slot, the next poll
+ * re-claims it), leaving two resolvers in flight. With a shared sentinel both
+ * would match the slot, so the loser would delete the winner's live stream from
+ * the map — leaking an SSE connection nothing can close, and re-subscribing on
+ * every poll thereafter. Identity of *this* token is what makes the check mean
+ * "the slot is still mine".
+ */
+const pendingStream = (): PromptStream => ({ close: () => {} });
+/**
+ * How long to leave a box's prompt stream alone after a permanent failure. The
+ * poll runs every second; retrying a 401 on that cadence would be a request per
+ * second at the control box, and it will not self-heal until the token is fixed.
+ */
+const PROMPT_STREAM_RETRY_MS = 60_000;
 
 // Synchronized Output (DECSET 2026): the terminal buffers everything between
 // begin/end and presents it in one go — no partial-frame flicker/tearing.
@@ -191,6 +221,13 @@ export class Compositor {
   /** Drives the spinner animation while {@link activeNotices} is non-empty. */
   private noticeTimer: ReturnType<typeof setInterval> | null = null;
   private readonly promptStreams = new Map<string, PromptStream>();
+  /**
+   * Boxes whose prompt stream failed permanently (a non-200 — e.g. a control box
+   * rejecting a stale admin token), with when it happened. The client does not
+   * retry those, and the slot is dropped so a later poll can, but not on the
+   * 1s cadence: a 401 would become a request per second against the control box.
+   */
+  private readonly promptStreamFailures = new Map<string, number>();
   private activeMode: 'claude' | 'shell' | 'codex' | 'opencode' = 'claude';
   private flashMsg: string | null = null;
   private flashTimer: ReturnType<typeof setTimeout> | null = null;
@@ -377,43 +414,99 @@ export class Compositor {
     // Open subscriptions for boxes we don't already track.
     for (const boxId of wanted) {
       if (this.promptStreams.has(boxId)) continue;
-      const stream = subscribePrompts({
-        relayBaseUrl: url,
-        boxId,
-        onPrompt: (ev) => {
-          if (this.tornDown) return;
-          this.activePrompts.set(boxId, ev);
-          this.redrawForAlert();
-        },
-        onResolved: (id) => {
-          if (this.tornDown) return;
-          const current = this.activePrompts.get(boxId);
-          if (current && current.id === id) {
-            this.activePrompts.delete(boxId);
-            this.redrawForAlert();
-          }
-        },
-        onNotice: (ev) => {
-          if (this.tornDown) return;
-          this.activeNotices.set(boxId, ev);
-          this.startNoticeSpinner();
-          this.redrawForAlert();
-        },
-        onNoticeCleared: (id) => {
-          if (this.tornDown) return;
-          const current = this.activeNotices.get(boxId);
-          if (current && current.id === id) {
-            this.activeNotices.delete(boxId);
-            if (this.activeNotices.size === 0) this.stopNoticeSpinner();
-            this.redrawForAlert();
-          }
-        },
-        onError: () => {
-          /* subscribePrompts already reconnects with backoff; nothing to do */
-        },
-      });
-      this.promptStreams.set(boxId, stream);
+      const failedAt = this.promptStreamFailures.get(boxId);
+      if (failedAt !== undefined && Date.now() - failedAt < PROMPT_STREAM_RETRY_MS) continue;
+      // Claim the slot before the (async) source resolution so a second poll
+      // landing mid-resolve can't open a duplicate stream for the same box.
+      const token = pendingStream();
+      this.promptStreams.set(boxId, token);
+      void this.openPromptStream(boxId, url, token);
     }
+  }
+
+  /**
+   * Resolve `boxId`'s relay (its own control box, else the global one) and open
+   * the SSE subscription. Bails if the box vanished — or the compositor tore
+   * down — while the source was resolving.
+   */
+  private async openPromptStream(
+    boxId: string,
+    fallbackUrl: string,
+    token: PromptStream,
+  ): Promise<void> {
+    let source: { baseUrl: string; authToken?: string; warning?: string } | null = null;
+    try {
+      source = (await this.deps.relaySourceFor?.(boxId)) ?? null;
+    } catch {
+      /* fall back to the global relay */
+    }
+    // Only clear the slot when it is still ours — a newer attempt (or a live
+    // stream it already installed) must not be evicted by this one bailing.
+    if (this.tornDown || this.promptStreams.get(boxId) !== token) {
+      if (this.promptStreams.get(boxId) === token) this.promptStreams.delete(boxId);
+      return;
+    }
+    // A resolver that could name the box's plane but not authenticate to it
+    // still returns a (loopback) source — say so, or the missing hub approvals
+    // are indistinguishable from having none.
+    if (source?.warning) this.noteBoxProblem(boxId, source.warning);
+    const stream = subscribePrompts({
+      relayBaseUrl: source?.baseUrl ?? fallbackUrl,
+      authToken: source?.authToken,
+      boxId,
+      onPrompt: (ev) => {
+        if (this.tornDown) return;
+        this.activePrompts.set(boxId, ev);
+        this.redrawForAlert();
+      },
+      onResolved: (id) => {
+        if (this.tornDown) return;
+        const current = this.activePrompts.get(boxId);
+        if (current && current.id === id) {
+          this.activePrompts.delete(boxId);
+          this.redrawForAlert();
+        }
+      },
+      onNotice: (ev) => {
+        if (this.tornDown) return;
+        this.activeNotices.set(boxId, ev);
+        this.startNoticeSpinner();
+        this.redrawForAlert();
+      },
+      onNoticeCleared: (id) => {
+        if (this.tornDown) return;
+        const current = this.activeNotices.get(boxId);
+        if (current && current.id === id) {
+          this.activeNotices.delete(boxId);
+          if (this.activeNotices.size === 0) this.stopNoticeSpinner();
+          this.redrawForAlert();
+        }
+      },
+      // Transient drops are retried inside `subscribePrompts`; this fires only
+      // for a permanent give-up (a non-200). Mirrors the attach footer: a dead
+      // stream must not read as "no approvals" for this box.
+      onError: (err) => {
+        if (this.tornDown) return;
+        this.promptStreamFailures.set(boxId, Date.now());
+        // Drop the slot so the box can be retried later (throttled above)
+        // rather than staying dead for the life of the dashboard.
+        const held = this.promptStreams.get(boxId);
+        if (held === stream) this.promptStreams.delete(boxId);
+        this.noteBoxProblem(boxId, `approvals unavailable (${err.message})`);
+      },
+    });
+    this.promptStreams.set(boxId, stream);
+  }
+
+  /**
+   * Surface a box-level problem through the same band the relay's own notices
+   * use, so a degraded approvals channel is visible rather than silent. Keyed
+   * per box; a real notice from the relay replaces it.
+   */
+  private noteBoxProblem(boxId: string, message: string): void {
+    this.activeNotices.set(boxId, { id: `local:${boxId}:problem`, message } as BoxNoticeEvent);
+    this.startNoticeSpinner();
+    this.redrawForAlert();
   }
 
   private startNoticeSpinner(): void {
@@ -791,14 +884,14 @@ export class Compositor {
     this.drawChrome();
     this.scheduleRender();
     try {
-      await this.deps.destroyBox(id);
+      const note = await this.deps.destroyBox(id);
       if (this.tornDown) return;
       await this.refreshBoxes();
       // The box is gone from the list; fall back to the first entry (the
       // synthetic "+ New box", always boxes[0] via listCandidates).
       if (this.boxes[0]) this.selectedId = this.boxes[0].id;
       await this.spawnActive();
-      this.flash(`destroyed ${name}`);
+      this.flash(note ? `destroyed ${name} — ${note}` : `destroyed ${name}`);
     } catch (err) {
       if (this.tornDown) return;
       const msg = err instanceof Error ? err.message : String(err);
@@ -905,10 +998,17 @@ export class Compositor {
     this.drawChrome();
     const url = this.deps.relayBaseUrl;
     if (url) {
-      void postAnswer({
-        relayBaseUrl: url,
-        body: { id: ev.id, answer, ...(cancelled ? { cancelled: true } : {}) },
-      });
+      // Answer on the relay this box actually registered with — the same one
+      // the prompt was streamed from, not necessarily this laptop's.
+      const boxId = this.selectedId;
+      void (async () => {
+        const source = await this.deps.relaySourceFor?.(boxId).catch(() => null);
+        await postAnswer({
+          relayBaseUrl: source?.baseUrl ?? url,
+          authToken: source?.authToken,
+          body: { id: ev.id, answer, ...(cancelled ? { cancelled: true } : {}) },
+        });
+      })();
     }
     return true;
   }

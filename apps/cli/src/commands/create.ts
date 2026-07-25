@@ -10,7 +10,6 @@ import {
   type UserConfig,
 } from '@agentbox/config';
 import {
-  DEFAULT_RELAY_PORT,
   detectEngine,
   listBoxes,
   type BoxRecord,
@@ -44,6 +43,7 @@ import { claudeCommand } from './claude.js';
 import { resolveCustodyTarget } from './control-plane.js';
 import { enqueueCreateViaHub, pollHubJob } from '../control-plane/hub-enqueue.js';
 import { resolveCreateRouting } from '../control-plane/route-create.js';
+import { attachRelayOptions } from '../control-plane/box-plane.js';
 
 interface CreateOptions {
   workspace: string;
@@ -141,7 +141,6 @@ function resolveCheckpointRef(opts: CreateOptions, configDefault: string): strin
   return configDefault.length > 0 ? configDefault : undefined;
 }
 
-const RELAY_HOST_URL = `http://127.0.0.1:${String(DEFAULT_RELAY_PORT)}`;
 
 async function attachShell(record: BoxRecord): Promise<never> {
   const dockerArgv = ['exec', '-it', record.container, 'bash'];
@@ -155,7 +154,7 @@ async function attachShell(record: BoxRecord): Promise<never> {
   const code = await runWrappedAttach({
     container: record.container,
     dockerArgv,
-    relayBaseUrl: RELAY_HOST_URL,
+    ...(await attachRelayOptions(record)),
     boxId: record.id,
     boxName: record.name,
     projectIndex: record.projectIndex,
@@ -345,7 +344,7 @@ export const createCommand = new Command('create')
   )
   .option(
     '--via-hub',
-    "force enqueuing the create on the control box (POST /remote/boxes) instead of building it on this machine; the resident hub worker provisions the box VPS-side. Cloud providers only. Needs a control plane configured (`control-plane set-url`) + admin token. When a control box is configured this is already the default for cloud boxes (cloud.viaHub).",
+    "force enqueuing the create on the control box (POST /remote/boxes) instead of building it on this machine; the resident hub worker provisions the box VPS-side. Cloud providers only. Needs a control plane configured (`hub set-url`) + admin token. When a control box is configured this is already the default for cloud boxes (cloud.viaHub).",
   )
   .option(
     '--local',
