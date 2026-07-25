@@ -36,9 +36,7 @@ export interface PortlessPromptArgs {
  * passes `false` for non-interactive / `--yes` runs to avoid a surprise
  * password dialog (falling straight through to the no-root :1355 proxy).
  */
-export async function setupPortlessHost(
-  opts: { allowRootPrompt?: boolean } = {},
-): Promise<void> {
+export async function setupPortlessHost(opts: { allowRootPrompt?: boolean } = {}): Promise<void> {
   const allowRootPrompt = opts.allowRootPrompt ?? true;
   let state = await detectPortless();
 

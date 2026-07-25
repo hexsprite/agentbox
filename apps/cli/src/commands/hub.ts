@@ -7,7 +7,11 @@ import { Command } from 'commander';
 import { handleLifecycleError } from './_errors.js';
 import { rehydrateFromState } from './relay.js';
 import { ensurePortlessProxyQuietly, resolvePortlessEnabled } from '../portless-prompt.js';
-import { resolveCustodyTarget, controlPlaneSubcommands, probeControlPlaneStatus } from './control-plane.js';
+import {
+  resolveCustodyTarget,
+  controlPlaneSubcommands,
+  probeControlPlaneStatus,
+} from './control-plane.js';
 import { loadControlPlaneEnv } from '../control-plane/env-file.js';
 import { CustodyClient } from '../control-plane/custody-client.js';
 import { ControlPlaneAdminClient } from '../control-plane/admin-client.js';
@@ -84,7 +88,10 @@ function renderStatus(s: HubStatus): string {
     ].join('\n');
   }
   if (s.pidAlive) {
-    return [`hub: not responding (pid ${String(s.pid)} alive but /healthz silent)`, `  log:  ${s.logFile}`].join('\n');
+    return [
+      `hub: not responding (pid ${String(s.pid)} alive but /healthz silent)`,
+      `  log:  ${s.logFile}`,
+    ].join('\n');
   }
   return ['hub: not running', `  log:  ${s.logFile}`].join('\n');
 }
@@ -93,7 +100,10 @@ const statusSub = new Command('status')
   .description(
     'Show hub status — the remote control box (reachability + box/event counts) when one is configured, else the local hub process',
   )
-  .option('--url <url>', 'probe this control-plane URL as the remote hub (default: relay.controlPlaneUrl)')
+  .option(
+    '--url <url>',
+    'probe this control-plane URL as the remote hub (default: relay.controlPlaneUrl)',
+  )
   .option('--json', 'emit status as JSON')
   .action(async (opts: StatusOpts) => {
     try {
@@ -144,7 +154,9 @@ const targetSub = new Command('target')
         : t.mode === 'remote'
           ? '(none — set AGENTBOX_HUB_API_KEY, or run `agentbox hub setup`)'
           : '(none — start the hub with `agentbox hub`)';
-      process.stdout.write([`hub: ${t.mode}`, `  url:   ${t.url}`, `  token: ${tokenNote}`].join('\n') + '\n');
+      process.stdout.write(
+        [`hub: ${t.mode}`, `  url:   ${t.url}`, `  token: ${tokenNote}`].join('\n') + '\n',
+      );
     } catch (err) {
       handleLifecycleError(err);
     }
@@ -218,7 +230,9 @@ const restartSub = new Command('restart')
   });
 
 const pullSub = new Command('pull')
-  .description("Download a control-box-created box's SSH keys so this PC can attach / port-forward / cp to it")
+  .description(
+    "Download a control-box-created box's SSH keys so this PC can attach / port-forward / cp to it",
+  )
   .argument('<box>', 'box id or name as shown by `agentbox hub boxes list`')
   .option('--url <url>', 'override the control-plane URL (default: relay.controlPlaneUrl)')
   .action(async (box: string, opts: { url?: string }) => {
@@ -236,12 +250,16 @@ const pullSub = new Command('pull')
       if (res.files.length === 0) {
         log.warn(
           `No SSH key material in custody for '${box}' (boxes/${res.key}/ssh). ` +
-            (res.registered ? 'The box may mint no keypair (e2b/vercel).' : 'The box is not registered on the control box.'),
+            (res.registered
+              ? 'The box may mint no keypair (e2b/vercel).'
+              : 'The box is not registered on the control box.'),
         );
         process.exitCode = 1;
         return;
       }
-      log.success(`Pulled ${String(res.files.length)} key file(s) to ${res.dest} — attach / cp / port-forward now work.`);
+      log.success(
+        `Pulled ${String(res.files.length)} key file(s) to ${res.dest} — attach / cp / port-forward now work.`,
+      );
     } catch (err) {
       handleLifecycleError(err);
     }
@@ -249,7 +267,7 @@ const pullSub = new Command('pull')
 
 const adoptSub = new Command('adopt')
   .description(
-    "Rebuild local state for a control-box-created box so it resolves by name here: writes its BoxRecord and downloads its SSH keys. After this it shows in `agentbox ls` and works with attach / cp / url / screen.",
+    'Rebuild local state for a control-box-created box so it resolves by name here: writes its BoxRecord and downloads its SSH keys. After this it shows in `agentbox ls` and works with attach / cp / url / screen.',
   )
   .argument('<box>', 'box id, name, or sandbox id as shown by `agentbox hub boxes list`')
   .option('--url <url>', 'override the control-plane URL (default: relay.controlPlaneUrl)')

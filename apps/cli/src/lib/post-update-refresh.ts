@@ -89,9 +89,7 @@ export async function maybeUpdateTray(say: (msg: string) => void): Promise<void>
  * version in the stamp so the startup prompt stays quiet until the next
  * package update.
  */
-export async function runPostUpdateRefresh(
-  opts: PostUpdateRefreshOptions = {},
-): Promise<void> {
+export async function runPostUpdateRefresh(opts: PostUpdateRefreshOptions = {}): Promise<void> {
   const say = (msg: string) => {
     if (!opts.quiet) log.info(msg);
   };

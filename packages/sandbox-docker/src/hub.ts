@@ -230,7 +230,10 @@ export function resolveHubServer(): string {
 }
 
 /** Kill whatever holds the port (a lean relay or a stale hub) and confirm it freed. */
-async function reclaimPort(reportedPid: number | undefined, log: (line: string) => void): Promise<void> {
+async function reclaimPort(
+  reportedPid: number | undefined,
+  log: (line: string) => void,
+): Promise<void> {
   const pidFromFile = await readPid(HUB_PID_FILE);
   const seen = new Set<number>();
   for (const pid of [reportedPid, pidFromFile]) {
@@ -353,11 +356,17 @@ async function spawnHub(
       await unlink(HUB_PID_FILE).catch(() => {});
       // Let the child flush its last stderr line into the log before we tail it.
       await delay(150);
-      throw new Error(await hubStartupError(`hub process exited (${describeExit(exit)}) during startup`));
+      throw new Error(
+        await hubStartupError(`hub process exited (${describeExit(exit)}) during startup`),
+      );
     }
     await delay(200);
   }
-  throw new Error(await hubStartupError(`hub did not become reachable on http://${HOST}:${String(PORT)} within ~25s`));
+  throw new Error(
+    await hubStartupError(
+      `hub did not become reachable on http://${HOST}:${String(PORT)} within ~25s`,
+    ),
+  );
 }
 
 function describeExit(exit: { code: number | null; signal: NodeJS.Signals | null }): string {
@@ -368,7 +377,9 @@ function describeExit(exit: { code: number | null; signal: NodeJS.Signals | null
 /** Build a startup-failure message with the tail of the hub log inlined. */
 async function hubStartupError(headline: string): Promise<string> {
   const tail = await tailFile(HUB_LOG_FILE, 20);
-  const suffix = tail ? `\n--- last lines of ${HUB_LOG_FILE} ---\n${tail}` : `; see ${HUB_LOG_FILE}`;
+  const suffix = tail
+    ? `\n--- last lines of ${HUB_LOG_FILE} ---\n${tail}`
+    : `; see ${HUB_LOG_FILE}`;
   return `${headline}${suffix}`;
 }
 

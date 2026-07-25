@@ -19,7 +19,7 @@ answers `401 AgentBox hub is locked`. The first tokened visit stores the secret 
 a cookie (30 days) and strips it from the address, so from then on a plain
 `https://agentbox.localhost` gets you in.
 
-<Callout type="info" title="Where the friendly URL comes from">`https://agentbox.localhost` is registered by [Portless](https://portless.sh), the same proxy AgentBox uses for box web apps. Without it — on OrbStack, when Portless isn't installed, or with `portless.enabled: false` — the hub falls back to the loopback URL `http://127.0.0.1:8787`, which works exactly the same way.</Callout>
+<Callout type="info" title="Where the friendly URL comes from">`https://agentbox.localhost` is registered by [Portless](https://portless.sh), the same proxy AgentBox uses for box web apps. Without it — on OrbStack, when Portless isn't installed, with `portless.enabled: false`, or whenever its proxy isn't running — the hub reports the loopback URL `http://127.0.0.1:8787` instead, which works exactly the same way. The hub only ever shows the `.localhost` URL when a proxy is actually live, so the address it prints is one you can open. Run [`agentbox install portless`](/docs/cli#setup--diagnostics) to have that proxy start at boot.</Callout>
 
 <Figure src="/screenshots/hub-dashboard.png" caption="The hub dashboard — boxes grouped by project, with live status and lifecycle controls." />
 

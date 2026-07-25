@@ -7,19 +7,25 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const { execaMock } = vi.hoisted(() => ({ execaMock: vi.fn() }));
 vi.mock('execa', () => ({ execa: execaMock }));
 
+import { existsSync } from 'node:fs';
+
 import {
   detectPortless,
+  ensurePortlessProxy,
   installPortless,
   portlessAlias,
   portlessBrowserEnv,
   portlessGetUrl,
   portlessInstallHint,
+  portlessServiceHint,
+  portlessServiceStatus,
   portlessStartHint,
   portlessDoctorRow,
   portlessUnalias,
   resetPortlessCache,
   resolvePortlessHostStateDir,
   startPortlessProxy,
+  PORTLESS_PROXY_PORT,
 } from '../src/portless.js';
 
 interface ExecaResult {
@@ -271,5 +277,99 @@ describe('portlessDoctorRow', () => {
     const row = portlessDoctorRow({ installed: true, proxyRunning: true });
     expect(row.status).toBe('ok');
     expect(row.detail).toBe('running');
+  });
+
+  it('stays ok but flags a running proxy with no OS service', () => {
+    const row = portlessDoctorRow({ installed: true, proxyRunning: true }, { installed: false });
+    expect(row.status).toBe('ok');
+    expect(row.detail).toContain("won't survive a reboot");
+    expect(row.hint).toContain(portlessServiceHint());
+  });
+
+  it('says nothing extra when the OS service is installed', () => {
+    const row = portlessDoctorRow({ installed: true, proxyRunning: true }, { installed: true });
+    expect(row.detail).toBe('running');
+    expect(row.hint).toBeUndefined();
+  });
+});
+
+describe('portlessServiceStatus', () => {
+  it('parses `Installed: yes`', async () => {
+    portlessResult = ok(
+      [
+        'portless service',
+        '  Manager state: running',
+        '  Installed: yes',
+        '  Proxy on 443: responding',
+      ].join('\n'),
+    );
+    expect(await portlessServiceStatus()).toEqual({ installed: true });
+    expect(execaMock).toHaveBeenCalledWith('portless', ['service', 'status'], { reject: false });
+  });
+
+  it('parses `Installed: no`', async () => {
+    portlessResult = ok(['portless service', '  Installed: no'].join('\n'));
+    expect(await portlessServiceStatus()).toEqual({ installed: false });
+  });
+
+  it('reports not-installed when the output has no Installed line', async () => {
+    // A future Portless could reword this; the fallback must not claim a
+    // service exists, since that only suppresses a nudge.
+    portlessResult = ok('something else entirely');
+    expect((await portlessServiceStatus()).installed).toBe(
+      process.platform === 'darwin'
+        ? existsSync('/Library/LaunchDaemons/sh.portless.proxy.plist')
+        : false,
+    );
+  });
+
+  it('never throws when the binary is missing', async () => {
+    portlessResult = new Error('spawn portless ENOENT');
+    await expect(portlessServiceStatus()).resolves.toBeDefined();
+  });
+});
+
+describe('ensurePortlessProxy', () => {
+  it('does nothing when Portless is not installed', async () => {
+    portlessResult = fail();
+    const state = await ensurePortlessProxy();
+    expect(state).toEqual({ installed: false, proxyRunning: false });
+    expect(execaMock.mock.calls.some((c) => c[1]?.includes?.('start'))).toBe(false);
+  });
+
+  it('does nothing when a proxy is already running', async () => {
+    await writeFile(join(stateDir, 'proxy.pid'), String(process.pid), 'utf8');
+    const state = await ensurePortlessProxy();
+    expect(state.proxyRunning).toBe(true);
+    const starts = execaMock.mock.calls.filter((c) => Array.isArray(c[1]) && c[1][0] === 'proxy');
+    expect(starts).toHaveLength(0);
+  });
+
+  it('starts the no-root proxy when none is running', async () => {
+    await ensurePortlessProxy();
+    expect(execaMock).toHaveBeenCalledWith(
+      'portless',
+      ['proxy', 'start', '--no-tls', '-p', String(PORTLESS_PROXY_PORT)],
+      { reject: false },
+    );
+  });
+
+  it('never asks for a password unless allowRootPrompt is set', async () => {
+    await ensurePortlessProxy();
+    expect(execaMock.mock.calls.some((c) => c[0] === 'osascript')).toBe(false);
+  });
+
+  it('reports the proxy as running once the start succeeds', async () => {
+    // The post-start re-probe is what tells the caller it worked, so simulate a
+    // proxy that writes its pid file the way a real daemon start does.
+    execaMock.mockImplementation(async (cmd: string, args?: readonly string[]) => {
+      if (cmd === 'pgrep') return pgrepResult;
+      if (Array.isArray(args) && args[0] === 'proxy' && args[1] === 'start') {
+        await writeFile(join(stateDir, 'proxy.pid'), String(process.pid), 'utf8');
+        return ok();
+      }
+      return portlessResult as ExecaResult;
+    });
+    expect((await ensurePortlessProxy()).proxyRunning).toBe(true);
   });
 });

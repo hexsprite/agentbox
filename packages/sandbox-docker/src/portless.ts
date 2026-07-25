@@ -180,7 +180,10 @@ export function portlessServiceHint(): string {
  * `<box>.localhost` alias with host Portless). Pure — the caller passes the
  * already-probed state so this stays offline and testable.
  */
-export function portlessDoctorRow(state: PortlessState, service?: PortlessServiceState): CheckResult {
+export function portlessDoctorRow(
+  state: PortlessState,
+  service?: PortlessServiceState,
+): CheckResult {
   if (!state.installed) {
     return {
       label: 'portless',

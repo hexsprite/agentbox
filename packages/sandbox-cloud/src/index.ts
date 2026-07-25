@@ -69,14 +69,15 @@ export {
   type SeedAgentStaticOptions,
   type SeedAgentStaticResult,
 } from './sync/agent-static.js';
-export { uploadEnvFiles, type UploadEnvFilesArgs, type UploadEnvFilesResult } from './sync/env-files.js';
+export {
+  uploadEnvFiles,
+  type UploadEnvFilesArgs,
+  type UploadEnvFilesResult,
+} from './sync/env-files.js';
 export { createCloudSyncTransport, type CloudSyncTransportInit } from './sync/sync-transport.js';
 export { makeCloudSync, type CloudSyncOptions } from './sync/cloud-sync.js';
 export { seedDynamicConfig, type SeedDynamicConfigOptions } from './sync/dynamic-sync.js';
-export {
-  seedClaudeJsonAtCreate,
-  type SeedClaudeJsonOptions,
-} from './sync/claude-json-overlay.js';
+export { seedClaudeJsonAtCreate, type SeedClaudeJsonOptions } from './sync/claude-json-overlay.js';
 export {
   seedGitIdentity,
   seedGitCredentials,

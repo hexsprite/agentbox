@@ -82,9 +82,15 @@ describe('lifecycle CLI surface', () => {
     );
   });
 
-  it('install takes --force and --dry-run, plus `cmux`, `herdr`, `codex`, and `app` subcommands', () => {
+  it('install takes --force and --dry-run, plus `cmux`, `herdr`, `portless`, `codex`, and `app` subcommands', () => {
     expect(installCommand.name()).toBe('install');
-    expect(installCommand.commands.map((c) => c.name())).toEqual(['cmux', 'herdr', 'codex', 'app']);
+    expect(installCommand.commands.map((c) => c.name())).toEqual([
+      'cmux',
+      'herdr',
+      'portless',
+      'codex',
+      'app',
+    ]);
     const longs = installCommand.options.map((o) => o.long);
     expect(longs).toEqual(expect.arrayContaining(['--force', '--dry-run']));
   });
@@ -176,9 +182,7 @@ describe('lifecycle CLI surface', () => {
     expect(attachCommand.registeredArguments).toHaveLength(1);
     expect(attachCommand.registeredArguments[0]!.required).toBe(false);
     const longs = attachCommand.options.map((o) => o.long);
-    expect(longs).toEqual(
-      expect.arrayContaining(['--session-name', '--attach-in', '--inline']),
-    );
+    expect(longs).toEqual(expect.arrayContaining(['--session-name', '--attach-in', '--inline']));
   });
 
   it('shell takes [box] + variadic [cmd...] and exposes the multi-shell flags', () => {
@@ -210,7 +214,9 @@ describe('lifecycle CLI surface', () => {
     expect(hubCommand.name()).toBe('hub');
     const subs = hubCommand.commands.map((c) => c.name());
     // Local hub process + client verbs (pre-existing).
-    expect(subs).toEqual(expect.arrayContaining(['start', 'status', 'target', 'stop', 'restart', 'pull', 'adopt']));
+    expect(subs).toEqual(
+      expect.arrayContaining(['start', 'status', 'target', 'stop', 'restart', 'pull', 'adopt']),
+    );
     // Folded remote-hub admin verbs (formerly `agentbox control-plane *`).
     expect(subs).toEqual(
       expect.arrayContaining([
@@ -231,7 +237,9 @@ describe('lifecycle CLI surface', () => {
     // No subcommand is dropped or duplicated by the fold.
     expect(new Set(subs).size).toBe(subs.length);
     // `start` stays the default (bare `agentbox hub` starts + opens the local hub).
-    expect((hubCommand as unknown as { _defaultCommandName?: string })._defaultCommandName).toBe('start');
+    expect((hubCommand as unknown as { _defaultCommandName?: string })._defaultCommandName).toBe(
+      'start',
+    );
   });
 
   it('hub status is unified by target: takes --url + --json', () => {
@@ -243,7 +251,9 @@ describe('lifecycle CLI surface', () => {
   it('hub boxes carries the box registry lifecycle subcommands', () => {
     const boxes = hubCommand.commands.find((c) => c.name() === 'boxes')!;
     const subs = boxes.commands.map((c) => c.name());
-    expect(subs).toEqual(expect.arrayContaining(['list', 'start', 'stop', 'pause', 'resume', 'rm']));
+    expect(subs).toEqual(
+      expect.arrayContaining(['list', 'start', 'stop', 'pause', 'resume', 'rm']),
+    );
   });
 
   it('all box-arg commands now accept [box] (optional) for auto-pick', () => {

@@ -46,6 +46,19 @@ The box and the host see the **same** URL for the web app, so OAuth redirects, C
 
 The in-box browser (`agentbox screen`) loads the **same** `<box-name>.localhost` URL the host uses, so the app is one origin from both sides.
 
+### Keep it working after a reboot
+
+The Portless proxy is a process, but the routes it serves are stored on disk — so after a restart the URLs still *exist* while nothing is listening on them. AgentBox restarts the proxy for you whenever it is about to hand out one of these URLs (creating a box, starting an agent, `agentbox hub`), and it does that silently, without asking for a password.
+
+To have the proxy up from the moment you log in — before you run any AgentBox command — install Portless's startup service once:
+
+```bash
+agentbox install portless              # asks for your password once
+agentbox install portless --uninstall  # remove the startup service again
+```
+
+The service runs the clean HTTPS proxy on port `443`, so box URLs become `https://<box-name>.localhost` with no port. `agentbox doctor` tells you which state you're in: proxy down, or running but with no startup service (fine until the next reboot).
+
 ```bash
 agentbox url my-box
 agentbox url my-box --print
@@ -59,7 +72,7 @@ agentbox url my-box --print
 Same origin on both sides means OAuth callbacks and CORS just work. Point your provider's redirect URI at `https://<box-name>.localhost` and it resolves correctly whether the request comes from your host browser or the in-box browser.
 </Callout>
 
-See [Local Docker](/docs/local-docker) / [Configuration](/docs/configuration) for Portless setup and the `portless.*` config keys. `agentbox doctor` flags a missing or stopped host Portless proxy on plain Docker Desktop / Linux engine (it's skipped on OrbStack) and on [Hetzner](/docs/hetzner), so you get the symmetric `.localhost` URL instead of a raw loopback fallback.
+See [Local Docker](/docs/local-docker) / [Configuration](/docs/configuration) for Portless setup and the `portless.*` config keys. `agentbox doctor` flags a missing or stopped host Portless proxy — and a running proxy with no startup service behind it — on plain Docker Desktop / Linux engine (it's skipped on OrbStack) and on [Hetzner](/docs/hetzner), so you get the symmetric `.localhost` URL instead of a raw loopback fallback.
 
 ## Cloud preview URLs
 

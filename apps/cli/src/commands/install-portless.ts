@@ -83,7 +83,9 @@ async function runServiceInstall(): Promise<boolean> {
   }
   const service = await portlessServiceStatus();
   if (!service.installed) {
-    log.warn('Portless reported success but the service is not registered — check `portless service status`.');
+    log.warn(
+      'Portless reported success but the service is not registered — check `portless service status`.',
+    );
     return false;
   }
   log.success('Portless starts at boot now.');
