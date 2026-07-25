@@ -23,12 +23,14 @@ import {
 } from '@agentbox/sandbox-docker';
 import { installHostSkills } from '../commands/install.js';
 import {
+  bestTrayRelease,
   decideTrayUpdate,
   fetchTraySidecarSha,
   installTray,
   readInstalledTrayVersion,
   trayInstalled,
 } from '../commands/install-app.js';
+import { STABLE_TRAY_TAG, resolveChannel } from './channel.js';
 import { AGENTBOX_VERSION } from '../version.js';
 import { log } from './prompt.js';
 import { readUpdateState, remoteCheckFresh, writeUpdateState } from './update-state.js';
@@ -44,16 +46,26 @@ export async function maybeUpdateTray(say: (msg: string) => void): Promise<void>
   const state = readUpdateState();
   // Reuse today's cached sidecar sha when we have one; otherwise fetch the
   // ~80-byte sidecar now (5s cap) — still never the 450KB zip unless it changed.
-  const latestSha =
+  //
+  // The sha MUST come from the release the channel actually resolves to. Reading
+  // it untagged always meant `tray-latest`, so a nightly user with an empty cache
+  // (a fresh install — exactly when this branch runs) compared their installed
+  // nightly tray against the STABLE sha, saw a difference, and re-downloaded on
+  // every refresh. The cached value is already channel-correct: the daily check
+  // resolves the winning tag before storing it.
+  const cachedSha =
     remoteCheckFresh(state) && state.remoteCheck?.trayLatestSha !== undefined
       ? state.remoteCheck.trayLatestSha
-      : await fetchTraySidecarSha();
+      : undefined;
+  const winner = cachedSha === undefined ? await bestTrayRelease(await resolveChannel()) : null;
+  const latestSha = cachedSha ?? (await fetchTraySidecarSha(winner?.tag ?? STABLE_TRAY_TAG));
   const decision = decideTrayUpdate({
     installed: true,
     stampedSha: state.traySha,
     latestSha,
     installedVersion: await readInstalledTrayVersion(),
-    latestVersion: state.remoteCheck?.trayLatestVersion,
+    // Same release as the sha above, so the two can't describe different builds.
+    latestVersion: winner?.version ?? state.remoteCheck?.trayLatestVersion,
   });
   if (!decision.update) {
     say(

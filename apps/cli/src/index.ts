@@ -310,7 +310,11 @@ if (AGENTBOX_VERSION !== '0.0.0-dev') {
     versionPromptShown = true;
     try {
       const yes = await confirm({
-        message: `agentbox was updated (${state.lastRunVersion} → ${AGENTBOX_VERSION}) — download new version now?`,
+        // Say what this actually does. "download new version now?" read as "there
+        // is another version waiting" — confusing right after the user installed
+        // this one on purpose, and wrong: nothing downloads here except the
+        // menu-bar app, and only when its published build differs.
+        message: `agentbox was updated (${state.lastRunVersion} → ${AGENTBOX_VERSION}) — refresh skills, box image, relay and the menu-bar app?`,
         initialValue: true,
       });
       if (yes) {
