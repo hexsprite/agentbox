@@ -9,6 +9,16 @@ Entries are generated from the commit history with `/release-notes` and then
 hand-reviewed — they describe what changed for someone using the `agentbox`
 CLI, not the raw commits.
 
+## [0.27.1] - 2026-07-25
+
+### Fixed
+
+- **A fresh `npm i -g @madarco/agentbox` crashed on every command** with
+  `Cannot find module 'ws'`. `ws` is an undeclared transitive peer of
+  `@daytona/sdk`'s `isomorphic-ws`, so npm never installed it — only
+  pnpm-based dev checkouts, which hoist it, worked. Affects 0.27.0; upgrade
+  or `npm i -g ws` alongside it.
+
 ## [0.27.0] - 2026-07-16
 
 ### Added
