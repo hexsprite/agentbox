@@ -13,6 +13,10 @@ CLI, not the raw commits.
 
 ### Added
 
+- `agentbox install portless` sets Portless up for good: it installs the CLI if
+  missing and registers Portless's own OS startup service, so the proxy serving
+  `https://<box>.localhost` is back after a reboot instead of staying down until
+  you start it by hand. `--uninstall` removes the service again.
 - **Deployed hub (control box).** `agentbox hub setup` (or `hub deploy hetzner |
   vercel`) puts a full hub — relay, web UI, and a create worker — on a VPS you
   own. Cloud boxes are then built and run **there**, so they keep going with your
@@ -34,6 +38,9 @@ CLI, not the raw commits.
 
 ### Changed
 
+- The startup "agentbox was updated" prompt says what the refresh actually does
+  (skills, box-image check, relay reload, menu-bar app) instead of offering to
+  "download new version now?" — nothing is downloaded.
 - **With a control box configured, cloud creates now go to it by default** —
   `agentbox create` and foreground `claude`/`codex`/`opencode` on a cloud
   provider. `--local` or `cloud.viaHub=false` keeps them on this machine; docker
@@ -45,6 +52,27 @@ CLI, not the raw commits.
 
 ### Fixed
 
+- **Box and hub `.localhost` URLs stopped working after a reboot.** A Portless
+  proxy dies with the machine while the routes it serves persist on disk, and
+  nothing restarted it — so `agentbox hub` kept printing
+  `https://agentbox.localhost:1355` with nothing listening. AgentBox now brings
+  the proxy back whenever it is about to hand out one of these URLs (create,
+  agent start, `hub start`/`restart`, `self-update`). It restarts the mode your
+  host already uses and never switches: a host on the clean HTTPS proxy is
+  pointed at `agentbox install portless` rather than silently downgraded, since
+  the scheme and port are part of the URL a box mirrors internally.
+- `agentbox doctor` reported the Portless proxy as running on hosts that had
+  none — the check matched any command line merely mentioning `portless proxy`.
+- The hub no longer advertises a Portless URL unless a proxy is actually
+  serving it (it falls back to `http://127.0.0.1:8787`), and re-resolves the URL
+  so switching proxy modes can't leave a stale one behind.
+- A box's Portless URL no longer depends on the directory the command ran from
+  (inside a git worktree it picked up a worktree-scoped hostname that was never
+  registered).
+- `agentbox self-update` again honors `portless.enabled: false` instead of
+  re-registering `agentbox.localhost` for users who had opted out.
+- On the nightly channel, the menu-bar app was re-downloaded on every refresh:
+  the installed build was compared against the **stable** release's checksum.
 - **A fresh `npm i -g @madarco/agentbox` crashed on every command** with
   `Cannot find module 'ws'`. `ws` is an undeclared transitive peer of
   `@daytona/sdk`'s `isomorphic-ws`, so npm never installed it; only pnpm-based
