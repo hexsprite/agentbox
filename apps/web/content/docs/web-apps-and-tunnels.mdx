@@ -48,16 +48,16 @@ The in-box browser (`agentbox screen`) loads the **same** `<box-name>.localhost`
 
 ### Keep it working after a reboot
 
-The Portless proxy is a process, but the routes it serves are stored on disk — so after a restart the URLs still *exist* while nothing is listening on them. AgentBox restarts the proxy for you whenever it is about to hand out one of these URLs (creating a box, starting an agent, `agentbox hub`), and it does that silently, without asking for a password.
+The Portless proxy is a process, but the routes it serves are stored on disk — so after a restart the URLs still *exist* while nothing is listening on them. AgentBox restarts the proxy whenever it is about to hand out one of these URLs (creating a box, starting an agent, `agentbox hub`).
 
-To have the proxy up from the moment you log in — before you run any AgentBox command — install Portless's startup service once:
+It restarts the proxy in the mode your host already uses, and never switches modes on its own. That matters because the scheme and port are *part of the URL*, and the URL is shared: a cloud box mirrors the host proxy's mode inside the box, and templates written against `{{AGENTBOX_BOX_HOST}}` spell `https://<box-name>.localhost` by hand. Coming back on a different port would leave the host serving one URL while the box still expects another — the exact symmetry this feature exists to provide. So a host on the clean HTTPS proxy (port `443`, which needs root) is never silently downgraded to the no-root port; AgentBox points you at the permanent fix instead:
 
 ```bash
 agentbox install portless              # asks for your password once
 agentbox install portless --uninstall  # remove the startup service again
 ```
 
-The service runs the clean HTTPS proxy on port `443`, so box URLs become `https://<box-name>.localhost` with no port. `agentbox doctor` tells you which state you're in: proxy down, or running but with no startup service (fine until the next reboot).
+That installs Portless's own startup service, so the HTTPS proxy is up from the moment you log in — before you run any AgentBox command, and with no password prompt after the first. `agentbox doctor` tells you which state you're in: proxy down, or running with no startup service behind it (fine until the next reboot).
 
 ```bash
 agentbox url my-box

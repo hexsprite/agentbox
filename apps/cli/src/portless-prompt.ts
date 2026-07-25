@@ -35,6 +35,11 @@ export interface PortlessPromptArgs {
  * after an interactive "yes", but the Hetzner path calls this directly, so it
  * passes `false` for non-interactive / `--yes` runs to avoid a surprise
  * password dialog (falling straight through to the no-root :1355 proxy).
+ *
+ * The :443 preference is not cosmetic. `https://<box>.localhost` is the URL a
+ * cloud box mirrors internally and the one users hand-write against
+ * `{{AGENTBOX_BOX_HOST}}`, so host and box only agree while the host proxy
+ * serves that exact scheme and port.
  */
 export async function setupPortlessHost(opts: { allowRootPrompt?: boolean } = {}): Promise<void> {
   const allowRootPrompt = opts.allowRootPrompt ?? true;
@@ -60,10 +65,10 @@ export async function setupPortlessHost(opts: { allowRootPrompt?: boolean } = {}
     return;
   }
 
-  // `ensurePortlessProxy` runs the same ladder (clean :443 first when we're
-  // allowed to ask for a password, else the silent no-root :1355 proxy). No
-  // spinner around the root attempt — the elevation prompt is modal and
-  // shouldn't race one.
+  // `ensurePortlessProxy` runs the ladder: the clean :443 proxy when we may ask
+  // for a password, the no-root port when that is refused or already the mode
+  // this host uses. No spinner around the root attempt — the elevation prompt is
+  // modal and shouldn't race one.
   if (allowRootPrompt) {
     log.info(
       'Starting the Portless proxy on https://<box>.localhost — you may be asked for your password.',
@@ -71,16 +76,18 @@ export async function setupPortlessHost(opts: { allowRootPrompt?: boolean } = {}
     state = await ensurePortlessProxy({ allowRootPrompt: true });
   } else {
     const s = spinner();
-    s.start('starting portless proxy (no TLS, port 1355 — no root needed)');
+    s.start('starting portless proxy');
     state = await ensurePortlessProxy({ allowRootPrompt: false });
-    // No port asserted here: the fallback usually lands on :1355, but if a root
-    // :443 proxy is already up it is reused instead. The real URL is resolved
-    // via `portless get` at create.
+    // No port asserted here: which port comes back is whichever one this host is
+    // already configured for. The real URL is resolved via `portless get`.
     s.stop(state.proxyRunning ? 'portless proxy started' : 'portless proxy did not start');
   }
 
   if (!state.proxyRunning) {
-    log.warn(`Could not start the Portless proxy — run \`${portlessStartHint()}\` yourself.`);
+    log.warn(
+      `Could not start the Portless proxy — run \`${portlessServiceHint()}\` (starts it at boot) ` +
+        `or \`${portlessStartHint()}\` for a one-off.`,
+    );
     return;
   }
   if (allowRootPrompt) {
@@ -111,15 +118,17 @@ export async function resolvePortlessEnabled(): Promise<boolean | undefined> {
  * is about to hand out a `<box>.localhost` URL calls this.
  *
  * Silent by design: it never prompts for a password (the tray app, the queue
- * worker and `self-update` all reach here), so it lands on the no-root
- * `:1355` proxy unless a better one is already up. Warns once, at most.
+ * worker and `self-update` all reach here). It restarts the mode this host is
+ * already configured for and never switches modes, so a host on the clean
+ * HTTPS :443 proxy — which needs root — gets a pointer to the one-time fix
+ * rather than a silently different URL. Warns once, at most.
  */
 export async function ensurePortlessProxyQuietly(): Promise<void> {
   const state = await ensurePortlessProxy({ allowRootPrompt: false });
   if (!state.installed || state.proxyRunning) return;
   log.warn(
     `Portless proxy is not running — box URLs fall back to loopback ports. ` +
-      `Fix it with \`${portlessServiceHint()}\`.`,
+      `Start it at boot with \`${portlessServiceHint()}\`.`,
   );
 }
 

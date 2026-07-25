@@ -64,12 +64,14 @@ export async function offerPortlessService(): Promise<void> {
  */
 async function runServiceInstall(): Promise<boolean> {
   // The service runs Portless's default mode — HTTPS on :443 — so a host that
-  // was on the no-root :1355 proxy moves to clean, port-less URLs. AgentBox
-  // re-resolves every URL through `portless get`, so this is a display change,
-  // but it is visible enough to warn about up front.
+  // was on the no-root :1355 proxy moves to clean, port-less URLs. That is the
+  // mode the rest of AgentBox is written against (a cloud box mirrors it
+  // internally, and `{{AGENTBOX_BOX_HOST}}` templates spell `https://…` by
+  // hand), but it *does* change existing box URLs, so say so before prompting.
   log.info(
     'Installing the Portless startup service (HTTPS on port 443) — ' +
-      'you may be asked for your password. Box URLs become https://<box>.localhost.',
+      'you may be asked for your password. Box URLs become https://<box>.localhost ' +
+      '(the same URL that works inside a box).',
   );
   const res = await installPortlessService();
   resetPortlessCache();
@@ -129,10 +131,14 @@ export const installPortlessCommand = new Command('portless')
     const service = await portlessServiceStatus();
     if (service.installed) {
       log.info('Portless startup service already installed.');
-    } else if (opts.yes === true || !process.stdin.isTTY) {
+    } else if (opts.yes === true) {
       await runServiceInstall();
-    } else {
+    } else if (process.stdin.isTTY) {
       await offerPortlessService();
+    } else {
+      // Installing the service raises a password dialog. Never do that from a
+      // script or a hook that nobody is watching — say what to run instead.
+      log.info('Startup service not installed — run `agentbox install portless -y` to add it.');
     }
 
     // Whether or not the service went in, leave the host with a live proxy —
