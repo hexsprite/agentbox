@@ -101,6 +101,10 @@ CLI, not the raw commits.
   control box under its correct key (`DAYTONA_ORGANIZATION_ID`, was
   `DAYTONA_ORG_ID`), and also carries provider endpoint/region overrides — so a
   JWT-mode Daytona (or custom-endpoint) provider works on the control box.
+- A cloud create could finish with a healthy box and no agent running in it: the
+  detached agent start fired a single ssh with no retry, and Daytona's SSH
+  gateway hangs up on an attach token minted seconds earlier. It now retries with
+  a fresh token, and reports what ssh actually said instead of a bare `exit 255`.
 
 ## [0.27.0] - 2026-07-16
 
