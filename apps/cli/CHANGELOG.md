@@ -35,6 +35,8 @@ CLI, not the raw commits.
 - `agentbox queue list` now also shows the control box's box-creation queue —
   where background `-i` cloud runs actually go when a hub is configured. New
   `agentbox hub jobs list` / `hub jobs show <id>` inspect it directly.
+- `ssh agentbox-hub` opens a shell on a deployed control box — the deploy adds a
+  `Host` entry for its VPS to AgentBox's managed SSH config, alongside your boxes.
 
 ### Changed
 
@@ -105,6 +107,15 @@ CLI, not the raw commits.
   detached agent start fired a single ssh with no retry, and Daytona's SSH
   gateway hangs up on an attach token minted seconds earlier. It now retries with
   a fresh token, and reports what ssh actually said instead of a bare `exit 255`.
+- **`agentbox hub setup` / `hub deploy hetzner` deployed the wrong version and
+  failed with a 502.** The git ref was hardcoded to `main`, so the CLI configured
+  the VPS for a hub it never built — the deploy timed out against a control box
+  that was actually healthy. The ref now defaults to the one matching your CLI,
+  and an incompatible `--ref` is rejected before the build instead of after it.
+- A failed control-box deploy is now debuggable: both commands write
+  `~/.agentbox/logs/hub-{setup,deploy}.log`, the VPS is recorded as soon as it
+  boots (it is left running), and the failure prints how to reach it and read the
+  hub's own logs.
 
 ## [0.27.0] - 2026-07-16
 
