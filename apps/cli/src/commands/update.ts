@@ -8,6 +8,7 @@ import {
   NIGHTLY_DIST_TAG,
   NPM_PACKAGE,
   STABLE_DIST_TAG,
+  channelOfVersion,
   persistChannel,
   resolveChannel,
   type UpdateChannel,
@@ -60,6 +61,42 @@ function describeSelfUpdate(method: ExecMethod, spec: string): string {
   }
 }
 
+export type SelfUpdateDecision =
+  | { install: false; reason: 'flag' | 'already-newest' }
+  | { install: true; reason: 'newer' | 'switching' | 'offline' };
+
+/**
+ * Whether to actually run the package install.
+ *
+ * The case this exists for: `newest` is only "the newest **published** version",
+ * and on the nightly channel the installed build is regularly ahead of what the
+ * dist-tags point at (right after a publish, before the next one, or a locally
+ * built one). Installing `newest` there would silently DOWNGRADE the user.
+ *
+ * The one sanctioned backward move is **leaving a channel**: opting out of nightly
+ * means landing on the newest *release*, which sorts lower than the prerelease in
+ * hand. That is keyed on the installed build's own channel, not on whether
+ * `--channel` was passed — `--channel nightly` while already running a nightly
+ * must NOT reinstall the older stable just because no newer nightly is published.
+ */
+export function decideSelfUpdate(input: {
+  installed: string;
+  /** Newest published version on the target channel; undefined when the registry was unreachable. */
+  newest: string | undefined;
+  /** Channel being installed from. */
+  target: UpdateChannel;
+  skipSelfFlag: boolean;
+}): SelfUpdateDecision {
+  if (input.skipSelfFlag) return { install: false, reason: 'flag' };
+  if (input.newest === undefined) return { install: true, reason: 'offline' };
+  if (isNewer(input.newest, input.installed)) return { install: true, reason: 'newer' };
+  if (input.newest === input.installed) return { install: false, reason: 'already-newest' };
+  // Older than what's installed: only acceptable to get off a channel we're on.
+  return channelOfVersion(input.installed) !== input.target
+    ? { install: true, reason: 'switching' }
+    : { install: false, reason: 'already-newest' };
+}
+
 function runInherit(cmd: string, args: string[]): Promise<number> {
   return new Promise<number>((resolveP, rejectP) => {
     const child = spawn(cmd, args, { stdio: 'inherit' });
@@ -68,25 +105,31 @@ function runInherit(cmd: string, args: string[]): Promise<number> {
   });
 }
 
-/**
- * Best-effort current-vs-newest report; a dead network never blocks the update.
- * Returns the version to install, or undefined when the registry is unreachable.
- */
-async function reportLatest(channel: UpdateChannel): Promise<string | undefined> {
+/** Newest published version on `channel`; undefined when the registry is unreachable. */
+async function fetchNewest(channel: UpdateChannel): Promise<string | undefined> {
   try {
-    const latest = await fetchNpmBest(channel);
-    if (latest === undefined) return undefined;
-    const suffix = channel === 'nightly' ? ' [nightly channel]' : '';
-    log.info(
-      isNewer(latest, AGENTBOX_VERSION)
-        ? `current ${AGENTBOX_VERSION} → newest ${latest}${suffix}`
-        : `already the newest (${AGENTBOX_VERSION})${suffix} — refreshing skills/image/relay/app anyway`,
-    );
-    return latest;
+    return await fetchNpmBest(channel);
   } catch {
-    // Offline — proceed without the report.
-    return undefined;
+    return undefined; // offline — the caller falls back to a dist-tag
   }
+}
+
+/** The current-vs-newest line, phrased for what is actually about to happen. */
+function describeResolution(
+  channel: UpdateChannel,
+  newest: string | undefined,
+  decision: SelfUpdateDecision,
+): string {
+  const on = channel === 'nightly' ? ' [nightly channel]' : '';
+  if (newest === undefined) return `could not reach the registry — updating from \`${channel}\`${on}`;
+  if (decision.reason === 'switching') {
+    // A deliberate move off the installed build's channel: `newest` sorts LOWER
+    // than what's installed, so "already the newest" would read as a contradiction
+    // next to a plan that installs it.
+    return `switching to the ${channel} channel: ${AGENTBOX_VERSION} → ${newest}`;
+  }
+  if (decision.install) return `current ${AGENTBOX_VERSION} → newest ${newest}${on}`;
+  return `already the newest (${AGENTBOX_VERSION})${on} — refreshing skills/image/relay/app anyway`;
 }
 
 export const updateCommand = new Command('self-update')
@@ -120,14 +163,24 @@ export const updateCommand = new Command('self-update')
         throw new Error(`--channel must be \`stable\` or \`nightly\` (got "${opts.channel}")`);
       }
       const channel: UpdateChannel = opts.channel ?? (await resolveChannel());
-      const newest = await reportLatest(channel);
+      const newest = await fetchNewest(channel);
 
       // Fall back to the channel's dist-tag when the registry was unreachable.
       const spec = newest ?? (channel === 'nightly' ? NIGHTLY_DIST_TAG : STABLE_DIST_TAG);
 
-      const selfStep = opts.skipSelf
-        ? 'self-update: skipped (--skip-self)'
-        : describeSelfUpdate(method, spec);
+      const decision = decideSelfUpdate({
+        installed: AGENTBOX_VERSION,
+        newest,
+        target: channel,
+        skipSelfFlag: opts.skipSelf === true,
+      });
+      log.info(describeResolution(channel, newest, decision));
+
+      const selfStep = decision.install
+        ? describeSelfUpdate(method, spec)
+        : decision.reason === 'flag'
+          ? 'self-update: skipped (--skip-self)'
+          : `self-update: skipped (${AGENTBOX_VERSION} is already the newest build)`;
       const skillsStep = opts.skipSkills
         ? 'skills: skipped (--skip-skills)'
         : 'skills: refresh agentbox-managed host skill files in ~/.claude (and Codex/OpenCode)';
@@ -173,8 +226,12 @@ export const updateCommand = new Command('self-update')
       // Step 1: self-update. selfUpdated stays false unless an npm/pnpm global
       // install actually ran — that's what makes the running process stale.
       let selfUpdated = false;
-      if (opts.skipSelf) {
-        log.info('skipping self-update (--skip-self)');
+      if (!decision.install) {
+        log.info(
+          decision.reason === 'flag'
+            ? 'skipping self-update (--skip-self)'
+            : `skipping self-update (${AGENTBOX_VERSION} is already the newest build)`,
+        );
       } else {
         const cmd = selfUpdateCommand(method, spec);
         if (cmd === null) {

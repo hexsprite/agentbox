@@ -31,6 +31,12 @@ CLI, not the raw commits.
 
 ### Fixed
 
+- **A fresh `npm i -g @madarco/agentbox` crashed on every command** with
+  `Cannot find module 'ws'`. `ws` is an undeclared transitive peer of
+  `@daytona/sdk`'s `isomorphic-ws`, so npm never installed it; only pnpm-based
+  dev checkouts, which hoist it, worked. Affected 0.27.0.
+- `agentbox self-update` no longer reinstalls an older published version when the
+  running build is already newer than anything on the registry.
 - A control box now uses a base image you baked with `box.claudeInstall: npm`.
   That setting is folded into the bake fingerprint but lives in `config.yaml`, so
   it never reached the control box — which defaulted to `native`, rejected the

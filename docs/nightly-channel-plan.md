@@ -105,23 +105,64 @@ All five implemented 2026-07-25 (branch `feat/nightly-channel`). What remains is
       `configuration.mdx`, `docs/development.md` (Branches + "Cutting a nightly"), `README.md`,
       `CHANGELOG.md`, and the tray's `README.md` / `CLAUDE.md`.
 
+## Verified locally
+
+Against a real `npm pack` tarball of `0.28.0-nightly.202607251205` installed into a clean prefix with
+an isolated `$HOME` (never the dev symlink — see "Found by the tarball verification"):
+
+- `agentbox --version` reports the prerelease.
+- With **no config at all**, the CLI derives the nightly channel from its own version — the
+  `self-update` report says `[nightly channel]`.
+- It polls both dist-tags and refuses to downgrade: with no `nightly` tag published, `latest` (0.27.0)
+  loses to the installed prerelease and the install step is skipped.
+- `--channel stable` reports `switching to the stable channel: 0.28.0-nightly.… → 0.27.0` and plans
+  `npm install -g @madarco/agentbox@0.27.0` — the opt-out.
+- `--channel nightly` from a nightly build correctly does nothing.
+- `--channel bogus` is rejected.
+- `update.channel` round-trips through `config set`/`get`, lands as `update: channel: nightly` in
+  `config.yaml`, refuses `weekly`, and a persisted `stable` overrides a nightly build.
+
 ## Still to do — the live pass
 
-Nothing here is testable without publishing, so it has to happen on the first real nightly:
+Needs a real publish:
 
 1. `npm publish --tag nightly` and then **`npm view @madarco/agentbox dist-tags`** — `latest` must be
    unchanged. This is the one irreversible step.
-2. Install the published nightly into a scratch prefix
-   (`npm i -g @madarco/agentbox@nightly --prefix /tmp/nightly-check`) and confirm
-   `agentbox --version` reports the prerelease and `self-update --dry-run` names a nightly version.
-3. Confirm the GHCR fingerprint tag for the nightly commit exists
+2. Confirm the GHCR fingerprint tag for the nightly commit exists
    (`docker buildx imagetools inspect ghcr.io/madarco/agentbox/box:sha-<16hex>`, sha from
    `node apps/cli/scripts/print-box-context-sha.mjs`) and that `:latest` still points at the
    main-built manifest.
-4. **The crossover**, once a stable release follows a nightly: a machine on `0.28.0-nightly.*` must be
+3. **The crossover**, once a stable release follows a nightly: a machine on `0.28.0-nightly.*` must be
    offered `0.28.0`, and after updating, `agentbox config get update.channel` must still read
    `nightly`. The last assertion is the one that catches silently dropping off the channel — the first
    two can pass while it fails.
+
+## Found by the tarball verification
+
+The plan called for packing a nightly and installing it into a clean prefix rather than trusting the
+dev CLI. That paid for itself three times — none of these were visible from the workspace, and two
+were silent:
+
+1. **`ws` was missing from the published dependency list, so the CLI crashed on *every* command.**
+   `@daytona/sdk` pulls `isomorphic-ws`, whose `ws` is an undeclared peer; npm installs no undeclared
+   transitive peer. pnpm's dev tree happens to have `ws` hoisted, which is why it survived into
+   **released 0.27.0** — `npm i -g @madarco/agentbox@0.27.0` into a clean prefix dies with
+   `Cannot find module 'ws'`. Fixed by declaring it in `apps/cli`, with
+   `apps/cli/test/runtime-deps.test.ts` guarding it (it has no importer, so it reads as removable).
+2. **`self-update` could silently downgrade.** `newest` is only "newest *published*", and on nightly
+   the installed build is routinely ahead of both dist-tags (between publishes). The old code always
+   installed `newest`, so a nightly tester's next `self-update` would have moved them back to the last
+   stable. Now guarded by `decideSelfUpdate`.
+3. **…and the first fix for that was too broad.** Letting any explicit `--channel` bypass the guard
+   meant `--channel nightly` *also* installed the older stable — the opposite of the request. The rule
+   is narrower: a backward move is only allowed when the installed build's channel differs from the
+   target, i.e. when genuinely *leaving* a channel. Unit tests passed against the wrong rule; running
+   the real binary is what caught it.
+
+Also worth knowing: **`npm pack` does not run `prepublishOnly`** (only `npm publish` does), so a pack
+uses whatever `dist/` already exists. Since the version is baked in at build time by tsup's `define`,
+a pack taken straight after `npm version` reports the *old* version. Build explicitly before packing
+when verifying. The real publish path is fine — turbo does invalidate on the version change.
 
 ## Gotchas found while planning
 
