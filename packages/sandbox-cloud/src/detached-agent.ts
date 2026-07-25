@@ -118,7 +118,7 @@ export async function verifyDetachedSession(
 ): Promise<void> {
   const windowMs = opts.windowMs ?? 10_000;
   const pollMs = opts.pollMs ?? 2_000;
-  const q = `'${sessionName.replace(/'/g, `'\\''`)}'`;
+  const q = tmuxTarget(sessionName);
   // One round-trip per tick: bail (exit 7) if the session is gone, else echo the
   // pane so we can sniff for an auth dead-end.
   const probe = `tmux has-session -t ${q} 2>/dev/null || exit 7; tmux capture-pane -p -t ${q} 2>/dev/null`;
@@ -169,8 +169,14 @@ function runDetached(
     child.stderr?.on('data', (c: Buffer) => {
       stderr += c.toString('utf8');
     });
-    child.on('error', (err) => resolve({ exitCode: 1, stderr: stderr + String(err.message ?? err) }));
-    child.on('exit', (code) => resolve({ exitCode: code ?? 0, stderr }));
+    child.on('error', (err) =>
+      resolve({ exitCode: 1, stderr: stderr + String(err.message ?? err) }),
+    );
+    // `close`, NOT `exit`: `exit` fires the moment the process dies, while the
+    // piped stderr may still be buffered — a fast failure (ssh giving up in
+    // under a second) then reports an EMPTY stderr and the caller throws a bare
+    // exit code with no cause. `close` waits for the stdio streams to drain.
+    child.on('close', (code) => resolve({ exitCode: code ?? 0, stderr }));
   });
 }
 
@@ -193,6 +199,51 @@ export interface StartDetachedCloudAgentArgs {
   resolveResumeArgs?: (box: BoxRecord) => Promise<string[] | null>;
   /** Settle-window tuning for the post-start session verification (test hook). */
   verify?: { windowMs?: number; pollMs?: number };
+  /** Retry tuning for the session pre-start itself (test hook). */
+  startRetry?: { attempts?: number; backoffMs?: number };
+}
+
+/**
+ * ssh's exit code for its OWN failures (connection dropped, host key, an auth
+ * token the gateway refuses) — the remote command never ran. Daytona's SSH
+ * gateway takes the ephemeral token as the *username* and simply hangs up on one
+ * it does not recognise, which is exactly what a token minted a second after
+ * sandbox create can look like: `Connection closed by remote host` → 255. The
+ * box is then fully healthy with no agent in it, so it is worth retrying: each
+ * attempt goes through `buildAttach` → `attachArgv` again and therefore mints a
+ * FRESH token.
+ */
+const SSH_TRANSPORT_EXIT = 255;
+const DEFAULT_START_ATTEMPTS = 3;
+const DEFAULT_START_BACKOFF_MS = 2_000;
+
+/** Single-quote a session name for the remote `bash -lc` probe. */
+function tmuxTarget(sessionName: string): string {
+  return `'${sessionName.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * Did the session get created after all? A transport failure usually means the
+ * command never ran, but a mid-flight disconnect can drop the connection *after*
+ * tmux created the session — and a blind retry would then fail forever on tmux's
+ * duplicate-session error. Checked over `exec` (the SDK path), which is
+ * independent of the ssh transport that just failed.
+ */
+async function tmuxSessionExists(
+  provider: Provider,
+  box: BoxRecord,
+  sessionName: string,
+): Promise<boolean> {
+  try {
+    const r = await provider.exec(
+      box,
+      ['bash', '-lc', `tmux has-session -t ${tmuxTarget(sessionName)} 2>/dev/null`],
+      { user: 'vscode' },
+    );
+    return r.exitCode === 0;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -201,7 +252,9 @@ export interface StartDetachedCloudAgentArgs {
  * on an auth error). Provider-parameterized so the hub worker can call it against
  * the `Provider` it already holds. Returns the possibly-started box record.
  */
-export async function startDetachedCloudAgent(args: StartDetachedCloudAgentArgs): Promise<BoxRecord> {
+export async function startDetachedCloudAgent(
+  args: StartDetachedCloudAgentArgs,
+): Promise<BoxRecord> {
   const { provider, binary, sessionName } = args;
   let box = args.box;
   const state = await provider.probeState(box);
@@ -217,12 +270,26 @@ export async function startDetachedCloudAgent(args: StartDetachedCloudAgentArgs)
     if (resume) extraArgs = resume;
   }
   const command = buildCloudAttachInnerCommand(binary, extraArgs);
-  const { exitCode, stderr } = await startDetachedSession(provider, box, sessionName, command);
-  if (exitCode !== 0) {
+  const attempts = Math.max(1, args.startRetry?.attempts ?? DEFAULT_START_ATTEMPTS);
+  const backoffMs = args.startRetry?.backoffMs ?? DEFAULT_START_BACKOFF_MS;
+  for (let attempt = 1; ; attempt++) {
+    const { exitCode, stderr } = await startDetachedSession(provider, box, sessionName, command);
+    if (exitCode === 0) break;
+    if (await tmuxSessionExists(provider, box, sessionName)) break;
+    if (exitCode === SSH_TRANSPORT_EXIT && attempt < attempts) {
+      await sleep(backoffMs * attempt);
+      continue;
+    }
     const detail = stderr.trim().slice(0, 500);
     throw new Error(
-      `failed to start the ${binary} session in box ${box.name} (exit ${String(exitCode)})` +
-        (detail ? `: ${detail}` : ''),
+      `failed to start the ${binary} session in box ${box.name} (exit ${String(exitCode)}` +
+        (attempt > 1 ? `, ${String(attempt)} attempts` : '') +
+        ')' +
+        (detail
+          ? `: ${detail}`
+          : exitCode === SSH_TRANSPORT_EXIT
+            ? ': the ssh transport failed before the command ran (connection closed or the attach token was rejected)'
+            : ''),
     );
   }
   await verifyDetachedSession(provider, box, sessionName, binary, args.verify);

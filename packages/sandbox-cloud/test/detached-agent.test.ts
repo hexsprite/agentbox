@@ -6,14 +6,27 @@ import { startDetachedCloudAgent } from '../src/detached-agent.js';
 // auth-rejection markers, so it resolves.
 const HEALTHY: ExecResult = { exitCode: 0, stdout: 'Working on it...', stderr: '' };
 
+// The bare `tmux has-session` probe the retry path uses to decide whether a
+// transport failure still left a session behind. Distinguished from the verify
+// probe, which also captures the pane.
+const isSessionExistsProbe = (argv: string[]): boolean =>
+  argv.some((a) => a.includes('has-session') && !a.includes('capture-pane'));
+
 interface FakeOpts {
   state?: 'running' | 'paused' | 'stopped' | 'missing';
   exec?: (argv: string[]) => ExecResult;
   onBuildAttach?: (opts: unknown) => void;
+  /** argv runDetached spawns, per attempt (1-indexed); defaults to `true`. */
+  argvForAttempt?: (attempt: number) => string[];
 }
 
-function fakeProvider(opts: FakeOpts = {}): { provider: Provider; started: () => number } {
+function fakeProvider(opts: FakeOpts = {}): {
+  provider: Provider;
+  started: () => number;
+  attempts: () => number;
+} {
   let starts = 0;
+  let attempts = 0;
   const provider = {
     name: 'e2b',
     probeState: () => Promise.resolve(opts.state ?? 'running'),
@@ -25,11 +38,17 @@ function fakeProvider(opts: FakeOpts = {}): { provider: Provider; started: () =>
     // touching a sandbox. The verify step below drives the mocked exec.
     buildAttach: (_box: BoxRecord, _kind: string, o: unknown) => {
       opts.onBuildAttach?.(o);
-      return Promise.resolve({ argv: ['true'], env: undefined });
+      attempts++;
+      return Promise.resolve({ argv: opts.argvForAttempt?.(attempts) ?? ['true'], env: undefined });
     },
-    exec: (_box: BoxRecord, argv: string[]) => Promise.resolve((opts.exec ?? (() => HEALTHY))(argv)),
+    exec: (_box: BoxRecord, argv: string[]) =>
+      Promise.resolve(
+        opts.exec?.(argv) ??
+          // No session yet unless a test says otherwise; the verify probe is healthy.
+          (isSessionExistsProbe(argv) ? { exitCode: 1, stdout: '', stderr: '' } : HEALTHY),
+      ),
   } as unknown as Provider;
-  return { provider, started: () => starts };
+  return { provider, started: () => starts, attempts: () => attempts };
 }
 
 const box = { name: 'kanban', cloud: { sandboxId: 'sbx-1' } } as BoxRecord;
@@ -71,15 +90,103 @@ describe('startDetachedCloudAgent', () => {
   it('throws when the sandbox is missing', async () => {
     const { provider } = fakeProvider({ state: 'missing' });
     await expect(
-      startDetachedCloudAgent({ provider, box, binary: 'claude', sessionName: 'claude', extraArgs: ['x'] }),
+      startDetachedCloudAgent({
+        provider,
+        box,
+        binary: 'claude',
+        sessionName: 'claude',
+        extraArgs: ['x'],
+      }),
     ).rejects.toThrow(/missing/);
   });
 
   it('propagates a verify failure when the session did not stay up (exit 7)', async () => {
     const { provider } = fakeProvider({ exec: () => ({ exitCode: 7, stdout: '', stderr: '' }) });
     await expect(
-      startDetachedCloudAgent({ provider, box, binary: 'claude', sessionName: 'claude', extraArgs: ['x'] }),
+      startDetachedCloudAgent({
+        provider,
+        box,
+        binary: 'claude',
+        sessionName: 'claude',
+        extraArgs: ['x'],
+      }),
     ).rejects.toThrow(/exited immediately after launch/);
+  });
+
+  it('surfaces the stderr of a fast-failing start (drains the pipe before resolving)', async () => {
+    // Regression: resolving on `exit` instead of `close` raced the buffered
+    // stderr, so a sub-second ssh failure reported a bare exit code with no cause.
+    const { provider } = fakeProvider({
+      argvForAttempt: () => ['bash', '-c', 'echo "closed by remote host" >&2; exit 255'],
+    });
+    await expect(
+      startDetachedCloudAgent({
+        provider,
+        box,
+        binary: 'claude',
+        sessionName: 'claude',
+        extraArgs: ['x'],
+        startRetry: { attempts: 1 },
+      }),
+    ).rejects.toThrow(/closed by remote host/);
+  });
+
+  it('retries a 255 transport failure with a freshly built attach spec', async () => {
+    // Daytona's SSH gateway hangs up on an attach token it does not recognise
+    // yet — each retry re-runs buildAttach, minting a new one.
+    const { provider, attempts } = fakeProvider({
+      argvForAttempt: (n) => (n < 3 ? ['bash', '-c', 'exit 255'] : ['true']),
+    });
+    await expect(
+      startDetachedCloudAgent({
+        provider,
+        box,
+        binary: 'claude',
+        sessionName: 'claude',
+        extraArgs: ['x'],
+        verify: { windowMs: 0 },
+        startRetry: { attempts: 3, backoffMs: 0 },
+      }),
+    ).resolves.toBeDefined();
+    expect(attempts()).toBe(3);
+  });
+
+  it('does not retry a non-transport failure', async () => {
+    const { provider, attempts } = fakeProvider({
+      argvForAttempt: () => ['bash', '-c', 'echo "duplicate session" >&2; exit 1'],
+    });
+    await expect(
+      startDetachedCloudAgent({
+        provider,
+        box,
+        binary: 'claude',
+        sessionName: 'claude',
+        extraArgs: ['x'],
+        startRetry: { attempts: 3, backoffMs: 0 },
+      }),
+    ).rejects.toThrow(/duplicate session/);
+    expect(attempts()).toBe(1);
+  });
+
+  it('accepts a session the failed transport left behind instead of retrying', async () => {
+    const { provider, attempts } = fakeProvider({
+      argvForAttempt: () => ['bash', '-c', 'exit 255'],
+      // The disconnect happened after tmux created the session; a blind retry
+      // would fail forever on tmux's duplicate-session error.
+      exec: () => HEALTHY,
+    });
+    await expect(
+      startDetachedCloudAgent({
+        provider,
+        box,
+        binary: 'claude',
+        sessionName: 'claude',
+        extraArgs: ['x'],
+        verify: { windowMs: 0 },
+        startRetry: { attempts: 3, backoffMs: 0 },
+      }),
+    ).resolves.toBeDefined();
+    expect(attempts()).toBe(1);
   });
 
   it('resolves resume args only when extraArgs is empty', async () => {
