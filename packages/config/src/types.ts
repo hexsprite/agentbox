@@ -8,12 +8,7 @@
  *   cli > workspace > project > global > built-in defaults.
  */
 
-import {
-  PROVIDERS,
-  PROVIDER_NAMES,
-  perProviderConfigKey,
-  type ProviderKind,
-} from './providers.js';
+import { PROVIDERS, PROVIDER_NAMES, perProviderConfigKey, type ProviderKind } from './providers.js';
 
 export type IdeFlavor = 'vscode' | 'cursor' | 'auto';
 export type EngineKind = 'orbstack' | 'docker-desktop' | 'other' | 'auto';
@@ -242,6 +237,13 @@ export interface UserConfig {
      * both the probe and the nudge.
      */
     check?: boolean;
+    /**
+     * Release channel. `auto` (default) follows the installed build — a
+     * `-nightly.` version means nightly. `nightly` pins membership so it
+     * survives a stable version being installed from the nightly channel;
+     * `stable` is the opt-out. See docs/nightly-channel-plan.md.
+     */
+    channel?: 'auto' | 'stable' | 'nightly';
   };
   integrations?: {
     notion?: {
@@ -397,6 +399,7 @@ export interface EffectiveConfig {
   };
   update: {
     check: boolean;
+    channel: 'auto' | 'stable' | 'nightly';
   };
   integrations: {
     notion: {
@@ -588,6 +591,7 @@ export const BUILT_IN_DEFAULTS: EffectiveConfig = {
   },
   update: {
     check: true,
+    channel: 'auto',
   },
   integrations: {
     notion: { enabled: false },
@@ -725,7 +729,7 @@ export const KEY_REGISTRY: readonly KeyDescriptor[] = [
     key: 'box.autoApproveSafeHostActions',
     type: 'bool',
     description:
-      'Auto-approve the SAFE subset of host actions without a prompt: opening a PR, PR/review comments, re-running CI, pushing to the box\'s scratch or host-sanctioned branch, checkpoints, integration writes, and file copy/download that stays inside the box project folder (non-secret). Uncontained or secret file transfers, non-sanctioned-branch pushes, and PR merge/checkout still prompt. On by default; set false to prompt for every host action (the pre-relax behavior). Superseded by box.autoApproveHostActions, which approves everything. Each auto-approval is recorded as a relay event.',
+      "Auto-approve the SAFE subset of host actions without a prompt: opening a PR, PR/review comments, re-running CI, pushing to the box's scratch or host-sanctioned branch, checkpoints, integration writes, and file copy/download that stays inside the box project folder (non-secret). Uncontained or secret file transfers, non-sanctioned-branch pushes, and PR merge/checkout still prompt. On by default; set false to prompt for every host action (the pre-relax behavior). Superseded by box.autoApproveHostActions, which approves everything. Each auto-approval is recorded as a relay event.",
   },
   {
     key: 'box.isolateClaudeConfig',
@@ -745,7 +749,8 @@ export const KEY_REGISTRY: readonly KeyDescriptor[] = [
   {
     key: 'box.image',
     type: 'string',
-    description: 'Generic box image ref (fallback). Used as fallback when no per-provider override is set; the default `agentbox/box:dev` is treated as a sentinel by cloud backends (boot from their prepared base snapshot instead).',
+    description:
+      'Generic box image ref (fallback). Used as fallback when no per-provider override is set; the default `agentbox/box:dev` is treated as a sentinel by cloud backends (boot from their prepared base snapshot instead).',
     advanced: true,
   },
   ...perProviderImageKeys(),
@@ -838,7 +843,7 @@ export const KEY_REGISTRY: readonly KeyDescriptor[] = [
     key: 'box.remoteDockerHost',
     type: 'string',
     description:
-      "Default SSH destination new --provider remote-docker boxes run their container on — an `~/.ssh/config` alias or `[user@]host[:port]`. Overridable per-create with `agentbox docker:<host> …` or `--remote-host`. SSH auth comes entirely from your own `~/.ssh/config` + agent. remote-docker-only; ignored by other providers.",
+      'Default SSH destination new --provider remote-docker boxes run their container on — an `~/.ssh/config` alias or `[user@]host[:port]`. Overridable per-create with `agentbox docker:<host> …` or `--remote-host`. SSH auth comes entirely from your own `~/.ssh/config` + agent. remote-docker-only; ignored by other providers.',
   },
   {
     key: 'box.vercelTimeoutMs',
@@ -963,19 +968,21 @@ export const KEY_REGISTRY: readonly KeyDescriptor[] = [
     key: 'ssh.autoConfig',
     type: 'bool',
     description:
-      'Automatically write a `~/.agentbox/ssh/config` entry (Include\'d from `~/.ssh/config`) for SSH-capable cloud boxes on create and start/resume, so `ssh <box>` just works. On by default; set false if you manage `~/.ssh/config` yourself. Explicit `agentbox shell --ssh-config`/`code`/`open` still write on demand regardless.',
+      "Automatically write a `~/.agentbox/ssh/config` entry (Include'd from `~/.ssh/config`) for SSH-capable cloud boxes on create and start/resume, so `ssh <box>` just works. On by default; set false if you manage `~/.ssh/config` yourself. Explicit `agentbox shell --ssh-config`/`code`/`open` still write on demand regardless.",
   },
   {
     key: 'engine.kind',
     type: 'enum',
     enumValues: ['orbstack', 'docker-desktop', 'other', 'auto'] as const,
-    description: 'Override the docker-engine auto-detection (used for OrbStack-only optimisations).',
+    description:
+      'Override the docker-engine auto-detection (used for OrbStack-only optimisations).',
   },
   {
     key: 'browser.default',
     type: 'enum',
     enumValues: ['agent-browser', 'playwright', 'both'] as const,
-    description: 'Default browser stack inside the box. "playwright" or "both" implies box.withPlaywright.',
+    description:
+      'Default browser stack inside the box. "playwright" or "both" implies box.withPlaywright.',
   },
   {
     key: 'relay.port',
@@ -1099,6 +1106,13 @@ export const KEY_REGISTRY: readonly KeyDescriptor[] = [
     type: 'bool',
     description:
       'Daily background check for a newer published agentbox (npm registry) and menu-bar app (release sha sidecar), plus the "newer version available" nudge. At most one network probe per 24h; false disables both.',
+  },
+  {
+    key: 'update.channel',
+    type: 'enum',
+    enumValues: ['auto', 'stable', 'nightly'] as const,
+    description:
+      'Which release channel `agentbox self-update` and `install app` follow: `auto` (default) follows the installed build, `nightly` opts into pre-release builds cut from the nightly branch, `stable` opts back out. Nightly always installs the newest build of EITHER channel, so a stable release supersedes the nightlies that preceded it.',
   },
   {
     key: 'integrations.notion.enabled',

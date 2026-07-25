@@ -19,6 +19,14 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import {
+  STABLE_TRAY_TAG,
+  bestOf,
+  resolveChannel,
+  trayReleaseTags,
+  type TaggedVersion,
+  type UpdateChannel,
+} from '../lib/channel.js';
 import { isNewer } from '../lib/semver-lite.js';
 import { writeUpdateState } from '../lib/update-state.js';
 
@@ -36,7 +44,27 @@ const LEGACY_APP_PATH = `/Applications/${LEGACY_APP_NAME}.app`;
 // Overridable for forks/testing; default is the public agentbox repo's moving tray release.
 const RELEASE_BASE =
   process.env.AGENTBOX_TRAY_RELEASE_BASE ?? 'https://github.com/madarco/agentbox/releases/download';
-const DEFAULT_TAG = 'tray-latest';
+const DEFAULT_TAG = STABLE_TRAY_TAG;
+
+/**
+ * Which tray release to install for `channel`. Stable is the tag itself — no
+ * probe, so its behavior is unchanged. Nightly compares the published version of
+ * both releases and takes the greater, so a tray-only *stable* release reaches
+ * nightly testers without anyone cutting a nightly tray build.
+ *
+ * Returns null when nothing comparable came back (offline, or a release predating
+ * `version.json`); callers fall back to {@link DEFAULT_TAG}.
+ */
+export async function bestTrayRelease(channel: UpdateChannel): Promise<TaggedVersion | null> {
+  if (channel === 'stable') return null;
+  const found = await Promise.all(
+    trayReleaseTags(channel).map(async (tag) => ({
+      tag,
+      version: await fetchTrayLatestVersion(tag),
+    })),
+  );
+  return bestOf(found);
+}
 
 export interface InstallTrayResult {
   ran: boolean;
@@ -89,8 +117,9 @@ export async function installTray(opts: InstallTrayOptions = {}): Promise<Instal
     sha = createHash('sha256').update(readFileSync(zip)).digest('hex');
   } else {
     scratch = mkdtempSync(join(tmpdir(), 'agentbox-tray-'));
+    const tag = opts.tag ?? (await bestTrayRelease(await resolveChannel()))?.tag ?? DEFAULT_TAG;
     try {
-      ({ zipPath: zip, sha } = await downloadAndVerify(opts.tag ?? DEFAULT_TAG, scratch, say));
+      ({ zipPath: zip, sha } = await downloadAndVerify(tag, scratch, say));
     } catch (err) {
       rmSync(scratch, { recursive: true, force: true });
       say(`Download failed: ${err instanceof Error ? err.message : String(err)}`);
