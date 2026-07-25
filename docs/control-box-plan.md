@@ -1134,6 +1134,20 @@ apps/cli/dist/index.js <cmd> --url http://127.0.0.1:8799`). The walk (all 8 gree
 
 Findings and follow-ups discovered while implementing, kept out of the phase they were found in.
 
+- **(2026-07-25) A failed deploy is now debuggable.** `hub setup` / `hub deploy hetzner` were the
+  only lifecycle commands with no command log — every progress line went to a @clack spinner, which
+  overwrites itself, so a failure (live report: `HTTP 502` at `/healthz` on a Mac mini) left nothing
+  to read and no record of the still-running VPS. Three fixes: (1) both commands tee to
+  `~/.agentbox/logs/hub-{setup,deploy}.log`; (2) `deployControlPlaneToHetzner` fires a new
+  `onProvisioned` callback as soon as the VPS has an IP, so `deploy.json` is written **before** the
+  ssh wait / compose build / healthz poll instead of only on success, and the failure path prints
+  the ssh + `docker compose logs app` recovery steps; (3) `syncAgentboxSshConfig` reads that record
+  and emits a `Host agentbox-hub` block (root + the per-deploy key), so the control box is reachable
+  with `ssh agentbox-hub` like any box. A 502 specifically means Caddy + cert are fine and the `app`
+  container isn't answering on `:8787` — go straight to `docker compose logs app`.
+  **Still open:** no teardown command — a failed deploy's server + firewall keep billing and must be
+  deleted from the Hetzner console (labeled `agentbox.role=control-plane`).
+
 - **(2026-07-24) Reverse-adoption shipped — the control box now DRIVES + DESTROYS registered-only
   boxes.** Previously a box the control box knew only from its Store registration (PC-created /
   independent) rendered as `running` but couldn't be driven: lifecycle/git 404'd and `boxes rm` reaped

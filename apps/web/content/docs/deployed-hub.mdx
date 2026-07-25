@@ -31,6 +31,34 @@ When it finishes, open `https://<ip>.sslip.io`, sign in with those credentials, 
 
 The deploy also mints a headless **API key** (`AGENTBOX_HUB_API_KEY`) and records it alongside the other deploy secrets in `~/.agentbox/control-plane/control-plane.env` (mode `0600`). It's the `Authorization: Bearer` credential for the hub's public [REST API](/docs/api) on the control box — so scripts and the menu-bar app can call `/api/v1` on the deployed hub without a browser login. It gates only `/api/v1`, never the web UI (that still needs your admin password).
 
+### Getting a shell on the control box
+
+The deploy mints a dedicated SSH key for the VPS (`~/.agentbox/control-plane/ssh/<stamp>/`) — it's the **only** key that machine trusts — and adds a `Host agentbox-hub` entry to AgentBox's [managed SSH config](/docs/configuration#ssh), so you can just:
+
+```bash
+ssh agentbox-hub                                   # root shell on the control box
+scp ~/.agentbox/daytona-prepared.json agentbox-hub:/opt/agentbox/hub-data/
+```
+
+The VPS firewall allows `:22` **only from the machine that deployed it**, so run this from that laptop. (Set `ssh.autoConfig false` and the entry isn't written; connect with `ssh -i ~/.agentbox/control-plane/ssh/<stamp>/id_ed25519 root@<ip>` instead.)
+
+### When a deploy fails
+
+Deploys are logged to `~/.agentbox/logs/hub-deploy.log` (`hub-setup.log` for `agentbox hub setup`), with `latest.log` pointing at the most recent run. The VPS is **not** torn down on failure — it stays up so you can inspect it, and its connection details are recorded in `~/.agentbox/control-plane/deploy.json` as soon as it boots. The command prints the same details when it fails.
+
+Most failures land after the VPS is up, so the logs you want are on the machine itself:
+
+```bash
+ssh agentbox-hub
+cd /opt/agentbox/apps/hub
+docker compose -f docker-compose.yml -f docker-compose.caddy.yml ps
+docker compose -f docker-compose.yml -f docker-compose.caddy.yml logs --tail=200 app
+```
+
+A **502** at `https://<ip>.sslip.io/healthz` means Caddy and the certificate are fine but the hub container isn't answering on `:8787` — check `logs app` above. A **certificate or connection** error instead means Caddy never came up. `cloud-init status --long` and `/var/log/cloud-init-output.log` cover the earlier phase (Docker install + repo clone).
+
+Retry with `agentbox hub deploy hetzner` — it reuses the GitHub App and env from the first run, so there's no need to run `hub setup` again. Add `--ref <branch>` if you need a ref other than `main`. The failed VPS and its firewall are still billing; delete them from the [Hetzner console](https://console.hetzner.cloud) (they're labeled `agentbox.role=control-plane`).
+
 ## Configure cloud providers on the control box
 
 The control box's resident worker provisions boxes with **your provider credentials**, so it needs them — and these are separate from agent logins (see [credentials and secrets](#credentials-and-secrets)). Two ways to get them there:
@@ -43,7 +71,7 @@ The control box's resident worker provisions boxes with **your provider credenti
 
 <Callout type="warn" title="Vercel needs a real token">Vercel has two auth modes. A **CLI login** (`agentbox vercel login` interactively) keeps the access token in the Vercel CLI's own store, **not** in `secrets.env` — so it can't travel to a headless server. For the control box, give Vercel a real **access token**: either set a `VERCEL_TOKEN` (+ team/project) in your host `secrets.env` before deploying, or paste one into the control box's **Settings** form. Token-based providers (DigitalOcean, E2B, Hetzner, Daytona) travel automatically.</Callout>
 
-<Callout type="info" title="Daytona / E2B / Hetzner need a base snapshot">Providers that boot from a baked base (e2b template, hetzner snapshot, daytona snapshot) read a `~/.agentbox/<provider>-prepared.json` to know the base id. The deploy **shares your local bake records** with the control box, and it adopts one automatically **when its build context matches** the control box's version — so a matching deploy needs no re-bake. A record baked with either [`box.claudeInstall`](/docs/configuration#box) mode is accepted, and the deploy carries your `box.claudeInstall` setting over so a bake the control box runs itself uses the same mode (`npm` matters there: the native installer's CDN sometimes 403s datacenter IPs). If the control box runs a *different* AgentBox version than the one you baked with, the fingerprints differ and the shared record is (correctly) ignored; a create from the CLI then fails with "run `agentbox prepare` first". Bake from the control box's own **Settings** page to fix that — or create the first box from the web UI, which bakes for you. You can also copy a record up: `scp -i ~/.agentbox/control-plane/ssh/<stamp>/id_ed25519 ~/.agentbox/daytona-prepared.json root@<vps-ip>:/opt/agentbox/hub-data/`.</Callout>
+<Callout type="info" title="Daytona / E2B / Hetzner need a base snapshot">Providers that boot from a baked base (e2b template, hetzner snapshot, daytona snapshot) read a `~/.agentbox/<provider>-prepared.json` to know the base id. The deploy **shares your local bake records** with the control box, and it adopts one automatically **when its build context matches** the control box's version — so a matching deploy needs no re-bake. A record baked with either [`box.claudeInstall`](/docs/configuration#box) mode is accepted, and the deploy carries your `box.claudeInstall` setting over so a bake the control box runs itself uses the same mode (`npm` matters there: the native installer's CDN sometimes 403s datacenter IPs). If the control box runs a *different* AgentBox version than the one you baked with, the fingerprints differ and the shared record is (correctly) ignored; a create from the CLI then fails with "run `agentbox prepare` first". Bake from the control box's own **Settings** page to fix that — or create the first box from the web UI, which bakes for you. You can also copy a record up: `scp ~/.agentbox/daytona-prepared.json agentbox-hub:/opt/agentbox/hub-data/`.</Callout>
 
 ## What runs where — and what the control box can drive
 

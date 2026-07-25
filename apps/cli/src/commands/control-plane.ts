@@ -32,7 +32,9 @@ import { providerForCreate } from '../provider/registry.js';
 import { makeControlPlaneCreateBox, cloneRepoWithLfs } from '../control-plane/create-box.js';
 import { runGitHubAppManifestFlow } from '../control-plane/github-app-manifest.js';
 import { deployControlPlaneToVercel } from '../control-plane/deploy-vercel.js';
-import { runHetznerDeploy } from '../control-plane/deploy-hetzner.js';
+import { recoveryHint, runHetznerDeploy } from '../control-plane/deploy-hetzner.js';
+import { openCommandLog } from '../lib/log-file.js';
+import { AGENTBOX_HUB_SSH_ALIAS, type ControlPlaneDeployRecord } from '@agentbox/sandbox-core';
 import { resolveHubAuthEnv } from '../control-plane/hub-auth-env.js';
 import {
   addRepoUrl,
@@ -141,6 +143,10 @@ const setupSub = new Command('setup')
   .option('--repo <owner/name>', 'GitHub repo to deploy the plane from (default madarco/agentbox; fork + pass this if you don\'t own it)')
   .option('--ref <ref>', 'git ref of the repo to deploy (branch/tag/sha; default main) — used by Vercel + Hetzner')
   .action(async (opts: SetupOpts) => {
+    // Every progress line here goes to a @clack spinner, which overwrites
+    // itself — a failed deploy left nothing to read afterwards. Tee to
+    // ~/.agentbox/logs/hub-setup.log (and latest.log) like create/claude do.
+    const cmdLog = openCommandLog('hub-setup');
     try {
       // Globally-unique by default — GitHub rejects duplicate App names.
       const name = opts.name ?? `agentbox-${randomBytes(4).toString('hex')}`;
@@ -160,9 +166,13 @@ const setupSub = new Command('setup')
         githubUrl: process.env.GITHUB_URL,
         apiBaseUrl: process.env.GITHUB_API_URL,
         openBrowser: openInBrowser,
-        log: (line) => s.message(line),
+        log: (line) => {
+          s.message(line);
+          cmdLog.write(line);
+        },
       });
       s.stop(`GitHub App created: ${app.slug} (id ${app.appId})`);
+      cmdLog.write(`GitHub App created: ${app.slug} (id ${app.appId})`);
 
       // Persist the App key + a generated admin token as the plane's deploy env.
       const adminToken = randomBytes(32).toString('hex');
@@ -208,8 +218,14 @@ const setupSub = new Command('setup')
         }
         const ds = spinner();
         ds.start(`deploying the control plane to ${target}`);
+        // Captured from the deploy's onProvisioned so a later failure can still
+        // tell the user how to reach the (still-running) VPS.
+        let provisioned: ControlPlaneDeployRecord | null = null;
         try {
-          const onLog = (line: string): void => ds.message(line);
+          const onLog = (line: string): void => {
+            ds.message(line);
+            cmdLog.write(line);
+          };
           const repo = opts.repo ?? DEFAULT_DEPLOY_REPO;
           const ref = opts.ref ?? DEFAULT_DEPLOY_REF;
           if (target === 'vercel') {
@@ -222,14 +238,27 @@ const setupSub = new Command('setup')
             };
             deployedUrl = (await deployControlPlaneToVercel({ env, repo, ref, log: onLog })).url;
           } else {
-            deployedUrl = (await runHetznerDeploy({ envPath: ENV_PATH, repoRef: ref, log: onLog })).url;
+            deployedUrl = (
+              await runHetznerDeploy({
+                envPath: ENV_PATH,
+                repoRef: ref,
+                log: onLog,
+                onProvisioned: (info) => {
+                  provisioned = info;
+                },
+              })
+            ).url;
           }
           ds.stop(`deployed: ${deployedUrl}`);
         } catch (e) {
           // Stop the spinner (code 1) before printing — otherwise it keeps
           // animating its last "creating the firewall…" frame under the error.
           ds.stop(`deploy to ${target} failed`, 1);
-          log.warn(`deploy to ${target} failed: ${e instanceof Error ? e.message : String(e)}`);
+          const msg = e instanceof Error ? e.message : String(e);
+          cmdLog.write(`deploy to ${target} failed: ${msg}`);
+          log.warn(`deploy to ${target} failed: ${msg}`);
+          if (provisioned) note(recoveryHint(provisioned).join('\n'), 'Debug the VPS');
+          log.info(`Full deploy log: ${cmdLog.path}`);
           printManualDeploy();
         }
       } else {
@@ -249,7 +278,10 @@ const setupSub = new Command('setup')
       log.info(`Install the App on your repos: ${app.installUrl}`);
       openInBrowser(app.installUrl);
     } catch (err) {
+      cmdLog.write(`FAILED: ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
       handleLifecycleError(err);
+    } finally {
+      cmdLog.close();
     }
   });
 
@@ -1192,6 +1224,9 @@ const deployHetznerSub = new Command('hetzner')
   .option('--ref <ref>', 'branch / tag / sha the VPS clones + builds', DEFAULT_DEPLOY_REF)
   .option('--repo <url>', 'git repo the VPS clones', DEFAULT_DEPLOY_REPO)
   .action(async (opts: DeployOpts) => {
+    // Tee the spinner's progress to ~/.agentbox/logs/hub-deploy.log — a deploy
+    // that dies at `compose up` or on a 502 otherwise leaves nothing to read.
+    const cmdLog = openCommandLog('hub-deploy');
     try {
       if (!existsSync(ENV_PATH)) {
         log.error('No control-plane env found. Run `agentbox hub setup` first (it creates the GitHub App + admin token).');
@@ -1211,19 +1246,30 @@ const deployHetznerSub = new Command('hetzner')
       const ds = spinner();
       ds.start('deploying the control box to hetzner');
       let deployedUrl: string;
+      let provisioned: ControlPlaneDeployRecord | null = null;
       try {
         deployedUrl = (
           await runHetznerDeploy({
             envPath: ENV_PATH,
             repoRef: opts.ref ?? DEFAULT_DEPLOY_REF,
             repoUrl,
-            log: (line) => ds.message(line),
+            log: (line) => {
+              ds.message(line);
+              cmdLog.write(line);
+            },
+            onProvisioned: (info) => {
+              provisioned = info;
+            },
           })
         ).url;
         ds.stop(`deployed: ${deployedUrl}`);
       } catch (e) {
         ds.stop('deploy failed');
-        log.error(e instanceof Error ? e.message : String(e));
+        const msg = e instanceof Error ? e.message : String(e);
+        cmdLog.write(`deploy failed: ${msg}`);
+        log.error(msg);
+        if (provisioned) note(recoveryHint(provisioned).join('\n'), 'Debug the VPS');
+        log.info(`Full deploy log: ${cmdLog.path}`);
         process.exitCode = 1;
         return;
       }
@@ -1234,8 +1280,12 @@ const deployHetznerSub = new Command('hetzner')
         ok ? `Control box is healthy (${url}/healthz).` : `Could not confirm ${url}/healthz yet — check the deployment.`,
       );
       if (ok) await seedPreparedToNewControlBox(url);
+      log.info(`Reach the VPS with \`ssh ${AGENTBOX_HUB_SSH_ALIAS}\`. Deploy log: ${cmdLog.path}`);
     } catch (err) {
+      cmdLog.write(`FAILED: ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
       handleLifecycleError(err);
+    } finally {
+      cmdLog.close();
     }
   });
 

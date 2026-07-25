@@ -38,6 +38,14 @@ export interface ControlPlaneHetznerDeployOptions {
   location?: string;
   serverImage?: string;
   onLog?: (line: string) => void;
+  /**
+   * Fired as soon as the VPS exists and its IP + SSH key are known — BEFORE the
+   * ssh wait, the compose build, and the healthz poll, all of which routinely
+   * fail. Everything after this point is debuggable only by getting INTO the
+   * VPS, so the caller must be able to persist the connection details before
+   * they can be lost. The server + firewall are not rolled back on failure.
+   */
+  onProvisioned?: (info: ControlPlaneHetznerDeployResult) => void | Promise<void>;
 }
 
 export interface ControlPlaneHetznerDeployResult {
@@ -280,6 +288,22 @@ export async function deployControlPlaneToHetzner(
   const url = `https://${domain}`;
   const target: SshTargetArgs = { host: ip, user: 'root', identity: key.privatePath, knownHosts };
 
+  const provisioned: ControlPlaneHetznerDeployResult = {
+    url,
+    serverId: server.id,
+    ip,
+    domain,
+    firewallId: firewall.id,
+    sshKeyDir: keyDir,
+  };
+  // Best-effort: a caller's bookkeeping failure must not abort a deploy that is
+  // otherwise fine (the record is a debugging aid, not part of the contract).
+  try {
+    await opts.onProvisioned?.(provisioned);
+  } catch {
+    /* best-effort */
+  }
+
   log(`VPS ${ip} up; waiting for ssh…`);
   if (!(await waitForSsh(target, 5 * 60_000))) {
     throw new Error(`ssh never came up on ${ip}`);
@@ -365,13 +389,5 @@ export async function deployControlPlaneToHetzner(
   log(`provisioned; waiting for HTTPS at ${url} …`);
   await pollHealthz(url, 3 * 60_000, log);
 
-  const result: ControlPlaneHetznerDeployResult = {
-    url,
-    serverId: server.id,
-    ip,
-    domain,
-    firewallId: firewall.id,
-    sshKeyDir: keyDir,
-  };
-  return result;
+  return provisioned;
 }

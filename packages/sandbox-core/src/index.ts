@@ -25,11 +25,14 @@ export { hostOpenCommand } from './host-open.js';
 export {
   agentboxSshConfigPath,
   agentboxAliasFor,
+  controlPlaneDeployPath,
+  AGENTBOX_HUB_SSH_ALIAS,
   ensureSshInclude,
   syncAgentboxSshConfig,
   hasUnmanagedHostConflict,
   parseSshTarget,
   readAgentboxSshAlias,
+  type ControlPlaneDeployRecord,
   type SshAliasOptions,
   type SshTarget,
 } from './ssh-config.js';

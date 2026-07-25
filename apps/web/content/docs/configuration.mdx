@@ -261,6 +261,12 @@ stop/start), and a box's entry is dropped on `destroy`. Set `ssh.autoConfig` to
 commands still write the entry on demand. Docker boxes (no SSH) and Daytona
 (60-minute token auth, no persistent key) are never auto-added.
 
+The same file also gets a `Host agentbox-hub` entry for a deployed
+[control box](/docs/deployed-hub), pointing at its VPS and the per-deploy key
+under `~/.agentbox/control-plane/ssh/<stamp>/` — so `ssh agentbox-hub` reaches
+the machine running your hub. A box you happen to name `agentbox-hub` wins the
+alias.
+
 ## browser
 
 | Key | Type | Default | Meaning |
