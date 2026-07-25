@@ -1148,6 +1148,22 @@ Findings and follow-ups discovered while implementing, kept out of the phase the
   **Still open:** no teardown command — a failed deploy's server + firewall keep billing and must be
   deleted from the Hetzner console (labeled `agentbox.role=control-plane`).
 
+- **(2026-07-25) `DEFAULT_DEPLOY_REF = 'main'` was silently deploying the wrong hub — fixed.** The
+  live 502 above had nothing to do with the VPS: the host CLI (nightly) wrote
+  `reverse_proxy app:8787` and a full-hub `.env`, while the VPS cloned `main` (v0.27.1), whose
+  compose publishes `8787:3000` behind **Postgres** and whose container listens on `:3000`. Caddy
+  dialled a dead port for the whole healthz window while `curl localhost:8787/healthz` on the VPS
+  returned `{"ok":true,...}`. The deploy is a two-sided contract — the VPS builds `apps/hub` from the
+  ref, the host generates the Caddyfile + `.env` around it — so a constant ref could never hold.
+  Fixes: (1) `deployRefForVersion` derives the ref from the running CLI (`nightly` for a nightly
+  build, `v<version>` for a release); (2) the Caddy upstream port is parsed from the **deployed**
+  compose (`hubContainerPort`) instead of hardcoded; (3) `isFullHubCompose` rejects a pre-full-hub
+  ref before the 20-minute build rather than after; (4) `pollHealthz` now ssh's in on failure and
+  distinguishes "hub is up, Caddy can't reach it" from "hub is down" (+ `docker compose ps`/logs);
+  (5) the cloud-init clone no longer falls back to a bare `git clone`, which silently left the
+  default branch checked out — verified locally that the old form put both a valid SHA and a
+  nonexistent ref on `main`, while the new form checks out the SHA and hard-fails the bad ref.
+
 - **(2026-07-24) Reverse-adoption shipped — the control box now DRIVES + DESTROYS registered-only
   boxes.** Previously a box the control box knew only from its Store registration (PC-created /
   independent) rendered as `running` but couldn't be driven: lifecycle/git 404'd and `boxes rm` reaped

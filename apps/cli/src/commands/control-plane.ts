@@ -33,6 +33,7 @@ import { makeControlPlaneCreateBox, cloneRepoWithLfs } from '../control-plane/cr
 import { runGitHubAppManifestFlow } from '../control-plane/github-app-manifest.js';
 import { deployControlPlaneToVercel } from '../control-plane/deploy-vercel.js';
 import { recoveryHint, runHetznerDeploy } from '../control-plane/deploy-hetzner.js';
+import { defaultDeployRef } from '../control-plane/deploy-ref.js';
 import { openCommandLog } from '../lib/log-file.js';
 import { AGENTBOX_HUB_SSH_ALIAS, type ControlPlaneDeployRecord } from '@agentbox/sandbox-core';
 import { resolveHubAuthEnv } from '../control-plane/hub-auth-env.js';
@@ -63,7 +64,8 @@ const META_PATH = join(CP_DIR, 'control-plane.json');
 
 /** Default GitHub repo the control plane is deployed from (Vercel + Hetzner). */
 const DEFAULT_DEPLOY_REPO = 'madarco/agentbox';
-const DEFAULT_DEPLOY_REF = 'main';
+/** Tracks the running CLI — see `deployRefForVersion` for why it can't be a constant. */
+const DEFAULT_DEPLOY_REF = defaultDeployRef();
 
 /** Persist `relay.controlPlaneUrl` and report it. Shared by set-url + setup. */
 async function applyControlPlaneUrl(url: string): Promise<string> {
@@ -141,7 +143,7 @@ const setupSub = new Command('setup')
   .option('--org <org>', 'create the App under an organization instead of your user account')
   .option('--deploy <target>', 'deploy the plane after creating the App: vercel | hetzner | none')
   .option('--repo <owner/name>', 'GitHub repo to deploy the plane from (default madarco/agentbox; fork + pass this if you don\'t own it)')
-  .option('--ref <ref>', 'git ref of the repo to deploy (branch/tag/sha; default main) — used by Vercel + Hetzner')
+  .option('--ref <ref>', `git ref of the repo to deploy (branch/tag/sha; default ${DEFAULT_DEPLOY_REF}, matching this CLI) — used by Vercel + Hetzner`)
   .action(async (opts: SetupOpts) => {
     // Every progress line here goes to a @clack spinner, which overwrites
     // itself — a failed deploy left nothing to read afterwards. Tee to

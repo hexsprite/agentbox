@@ -57,7 +57,9 @@ docker compose -f docker-compose.yml -f docker-compose.caddy.yml logs --tail=200
 
 A **502** at `https://<ip>.sslip.io/healthz` means Caddy and the certificate are fine but the hub container isn't answering on `:8787` — check `logs app` above. A **certificate or connection** error instead means Caddy never came up. `cloud-init status --long` and `/var/log/cloud-init-output.log` cover the earlier phase (Docker install + repo clone).
 
-Retry with `agentbox hub deploy hetzner` — it reuses the GitHub App and env from the first run, so there's no need to run `hub setup` again. Add `--ref <branch>` if you need a ref other than `main`. The failed VPS and its firewall are still billing; delete them from the [Hetzner console](https://console.hetzner.cloud) (they're labeled `agentbox.role=control-plane`).
+Retry with `agentbox hub deploy hetzner` — it reuses the GitHub App and env from the first run, so there's no need to run `hub setup` again. The failed VPS and its firewall are still billing; delete them from the [Hetzner console](https://console.hetzner.cloud) (they're labeled `agentbox.role=control-plane`).
+
+<Callout type="warn" title="Don't pin --ref to an older version">The deploy is a two-sided contract: the VPS builds `apps/hub` from the cloned ref, while your CLI generates the Caddy config and `.env` that wrap it. They only line up when both come from the same code, so `--ref` defaults to the ref matching your CLI — its `v<version>` tag on a release, `nightly` on a nightly build. Pin an older ref and the deploy stops before building, with an error naming `--ref`. Pass one only to deploy a **newer** branch (a feature branch you want to verify live).</Callout>
 
 ## Configure cloud providers on the control box
 

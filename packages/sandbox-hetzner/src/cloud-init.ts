@@ -94,7 +94,11 @@ export function controlPlaneCloudInit(opts: ControlPlaneCloudInitOptions): strin
     '  - [ chage, -E, "-1", -I, "-1", -M, "99999", root ]',
     '  - [ bash, -lc, "curl -fsSL https://get.docker.com | sh" ]',
     '  - [ bash, -lc, "apt-get update && apt-get install -y git" ]',
-    `  - [ bash, -lc, "git clone --depth 1 --branch ${shArg(opts.repoRef)} ${shArg(opts.repoUrl)} /opt/agentbox || git clone ${shArg(opts.repoUrl)} /opt/agentbox" ]`,
+    // Two-step so a SHA works at all (`--branch <sha>` is invalid) — and so a ref
+    // that doesn't exist FAILS. The old fallback was a bare `git clone`, which
+    // silently left the repo's default branch checked out: the deploy then built
+    // a different version than it configured, and only surfaced as a 502.
+    `  - [ bash, -lc, "git clone --depth 1 --branch ${shArg(opts.repoRef)} ${shArg(opts.repoUrl)} /opt/agentbox || { rm -rf /opt/agentbox && git clone ${shArg(opts.repoUrl)} /opt/agentbox && git -C /opt/agentbox checkout ${shArg(opts.repoRef)}; } || rm -rf /opt/agentbox" ]`,
     '',
   ].join('\n');
 }

@@ -178,10 +178,45 @@ async function collectProviderSecrets(): Promise<string> {
   return filterProviderSecrets(body);
 }
 
-function caddyfile(domain: string): string {
+function caddyfile(domain: string, appPort: number): string {
   // Caddy auto-provisions a Let's Encrypt cert for the site address and reverse-
-  // proxies to the Next app on the compose network (the app listens on :8787).
-  return `${domain} {\n\treverse_proxy app:8787\n}\n`;
+  // proxies to the hub on the compose network. `appPort` is the port the DEPLOYED
+  // ref's container actually listens on — hardcoding this CLI's port made a
+  // cross-version deploy 502 forever against a healthy hub.
+  return `${domain} {\n\treverse_proxy app:${String(appPort)}\n}\n`;
+}
+
+/** Fallback when the compose can't be parsed — the port this CLI's hub listens on. */
+const HUB_CONTAINER_PORT = 8787;
+
+/**
+ * The container port `apps/hub/docker-compose.yml` publishes 8787 to — i.e. the
+ * port the hub listens on INSIDE its container, which is what Caddy has to dial
+ * over the compose network.
+ *
+ * It moved (`8787:3000` on the Next-only hub, `8787:8787` on the full hub), so
+ * the deploy reads it from the ref it is actually deploying instead of assuming.
+ * Pure — unit-testable.
+ */
+export function hubContainerPort(composeYaml: string): number | undefined {
+  // `- '8787:3000'` / `- "8787:8787"` / `- 8787:8787`, optionally IP-prefixed.
+  const m = /^\s*-\s*['"]?(?:[\d.]+:)?8787:(\d+)['"]?\s*$/m.exec(composeYaml);
+  const port = m?.[1] === undefined ? NaN : Number(m[1]);
+  return Number.isInteger(port) && port > 0 ? port : undefined;
+}
+
+/**
+ * Whether a cloned ref's compose is the FULL hub this deploy knows how to wire.
+ *
+ * `AGENTBOX_HUB_DATA_DIR` is the tell: the deploy creates that host directory,
+ * scp's provider secrets into it, and passes it through `.env` expecting the
+ * compose to bind-mount it at `/root/.agentbox`. A ref that predates the full
+ * hub ignores the key entirely, so the deploy's state (and its Postgres-vs-SQLite
+ * assumption) silently doesn't apply. Fail fast instead of building for 20
+ * minutes and serving something subtly wrong.
+ */
+export function isFullHubCompose(composeYaml: string): boolean {
+  return composeYaml.includes('AGENTBOX_HUB_DATA_DIR');
 }
 
 const CADDY_COMPOSE = `services:
@@ -217,7 +252,12 @@ async function serverIpv4(
   throw new Error(`server ${String(server.id)} never got a public IPv4`);
 }
 
-async function pollHealthz(url: string, deadlineMs: number, log: (l: string) => void): Promise<void> {
+async function pollHealthz(
+  url: string,
+  deadlineMs: number,
+  log: (l: string) => void,
+  diagnose?: () => Promise<string>,
+): Promise<void> {
   const stop = Date.now() + deadlineMs;
   let lastErr = '';
   while (Date.now() < stop) {
@@ -231,7 +271,37 @@ async function pollHealthz(url: string, deadlineMs: number, log: (l: string) => 
     log(`waiting for ${url}/healthz (cert + app)… ${lastErr}`);
     await new Promise((r) => setTimeout(r, 6_000));
   }
-  throw new Error(`control plane did not become healthy at ${url} (${lastErr})`);
+  // "HTTP 502 for 3 minutes" says nothing about which of the three layers
+  // (Caddy, the proxy hop, the hub) is broken. We still hold the ssh key, so ask
+  // the VPS directly before giving up.
+  const detail = diagnose ? await diagnose().catch(() => '') : '';
+  throw new Error(
+    `control plane did not become healthy at ${url} (${lastErr})${detail ? `\n${detail}` : ''}`,
+  );
+}
+
+/**
+ * Whether the hub answers on the VPS's own published port. Splits a failing
+ * healthz into "the hub is down" vs "the hub is up and Caddy can't reach it".
+ */
+async function diagnoseUnhealthy(target: SshTargetArgs, appPort: number): Promise<string> {
+  const local = await sshExec(target, `curl -fsS -m 5 http://127.0.0.1:8787/healthz`);
+  if (local.exitCode === 0) {
+    return (
+      `the hub IS healthy on the VPS (127.0.0.1:8787 answered) — Caddy cannot reach it, ` +
+      `so its upstream port (app:${String(appPort)}) does not match what the container listens on. ` +
+      `Check \`docker compose ps\` on the VPS and redeploy with a ref matching this CLI.`
+    );
+  }
+  const ps = await sshExec(
+    target,
+    `cd ${REMOTE_APP_DIR} && docker compose -f docker-compose.yml -f docker-compose.caddy.yml ps`,
+  );
+  const logs = await sshExec(
+    target,
+    `cd ${REMOTE_APP_DIR} && docker compose -f docker-compose.yml -f docker-compose.caddy.yml logs --tail=30 app 2>&1`,
+  );
+  return `the hub is NOT answering on the VPS either.\n${ps.stdout.trim()}\n--- app logs (last 30) ---\n${logs.stdout.trim()}`;
 }
 
 export async function deployControlPlaneToHetzner(
@@ -315,6 +385,19 @@ export async function deployControlPlaneToHetzner(
     throw new Error('repo clone did not complete on the VPS (cloud-init failed)');
   }
 
+  // Read the compose the VPS actually cloned. The host generates the Caddyfile
+  // and the `.env` around it, so anything version-dependent has to come from
+  // there rather than from this CLI's assumptions about `repoRef`.
+  const composeBody = await sshExec(target, `cat ${REMOTE_APP_DIR}/docker-compose.yml`);
+  const compose = composeBody.exitCode === 0 ? composeBody.stdout : '';
+  if (compose && !isFullHubCompose(compose)) {
+    throw new Error(
+      `the deployed ref (${repoRef}) predates the full-hub deploy — its apps/hub/docker-compose.yml ignores AGENTBOX_HUB_DATA_DIR, so this CLI's env and persistent-state wiring do not apply to it. Deploy a ref matching this CLI (omit --ref) or upgrade the CLI to match the ref.`,
+    );
+  }
+  const appPort = hubContainerPort(compose) ?? HUB_CONTAINER_PORT;
+  log(`hub listens on :${String(appPort)} in-container (from the deployed compose)`);
+
   // The full-hub compose keys the deploy adds on top of the App/auth env:
   //  - the persistent data dir (bind-mounted at /root/.agentbox),
   //  - the public URL a hub-created box registers against (control-plane topology),
@@ -338,7 +421,7 @@ export async function deployControlPlaneToHetzner(
     const composeLocal = join(staging, 'docker-compose.caddy.yml');
     const secretsLocal = join(staging, 'secrets.env');
     await writeFile(envLocal, opts.envContent + hubEnvExtra, { mode: 0o600 });
-    await writeFile(caddyLocal, caddyfile(domain));
+    await writeFile(caddyLocal, caddyfile(domain, appPort));
     await writeFile(composeLocal, CADDY_COMPOSE);
     await writeFile(secretsLocal, providerSecrets, { mode: 0o600 });
     log('creating the persistent data dir on the VPS…');
@@ -387,7 +470,7 @@ export async function deployControlPlaneToHetzner(
   }
 
   log(`provisioned; waiting for HTTPS at ${url} …`);
-  await pollHealthz(url, 3 * 60_000, log);
+  await pollHealthz(url, 3 * 60_000, log, () => diagnoseUnhealthy(target, appPort));
 
   return provisioned;
 }
