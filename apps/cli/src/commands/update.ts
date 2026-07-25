@@ -8,7 +8,7 @@ import {
   NIGHTLY_DIST_TAG,
   NPM_PACKAGE,
   STABLE_DIST_TAG,
-  channelOfVersion,
+  isPrerelease,
   persistChannel,
   resolveChannel,
   type UpdateChannel,
@@ -73,11 +73,19 @@ export type SelfUpdateDecision =
  * dist-tags point at (right after a publish, before the next one, or a locally
  * built one). Installing `newest` there would silently DOWNGRADE the user.
  *
- * The one sanctioned backward move is **leaving a channel**: opting out of nightly
- * means landing on the newest *release*, which sorts lower than the prerelease in
- * hand. That is keyed on the installed build's own channel, not on whether
- * `--channel` was passed — `--channel nightly` while already running a nightly
- * must NOT reinstall the older stable just because no newer nightly is published.
+ * The one sanctioned backward move is **leaving a pre-release for stable**: opting
+ * out of nightly means landing on the newest *release*, which sorts lower than the
+ * prerelease in hand.
+ *
+ * It is deliberately keyed on `isPrerelease(installed) && target === 'stable'`
+ * rather than on "the channels differ" or on whether `--channel` was passed. Both
+ * looser forms reinstall something older in a reachable state:
+ *   - "`--channel` was passed" → `--channel nightly` while already on a nightly
+ *     installs the older stable, the opposite of the request.
+ *   - "channels differ" → after a crossover the running build is a plain release
+ *     while the target is still `nightly`; if the `latest` probe transiently fails
+ *     and the `nightly` tag still points at the prerelease that release superseded,
+ *     the user gets dragged back onto it.
  */
 export function decideSelfUpdate(input: {
   installed: string;
@@ -91,8 +99,8 @@ export function decideSelfUpdate(input: {
   if (input.newest === undefined) return { install: true, reason: 'offline' };
   if (isNewer(input.newest, input.installed)) return { install: true, reason: 'newer' };
   if (input.newest === input.installed) return { install: false, reason: 'already-newest' };
-  // Older than what's installed: only acceptable to get off a channel we're on.
-  return channelOfVersion(input.installed) !== input.target
+  // Older than what's installed: only acceptable to leave a pre-release for stable.
+  return isPrerelease(input.installed) && input.target === 'stable'
     ? { install: true, reason: 'switching' }
     : { install: false, reason: 'already-newest' };
 }

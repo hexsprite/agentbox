@@ -66,6 +66,17 @@ describe('decideSelfUpdate', () => {
     ).toEqual({ install: false, reason: 'already-newest' });
   });
 
+  it('does not drag a post-crossover stable build back onto the prerelease it replaced', () => {
+    // Reachable state: the user crossed over to 0.28.0 but `update.channel` is
+    // still nightly, and the `nightly` tag still points at the prerelease that
+    // release superseded. If the `latest` probe transiently fails, `newest` is
+    // that older prerelease. Keying the backward move on "the channels differ"
+    // would reinstall it. (Reported by Bugbot on #252.)
+    expect(
+      decide({ installed: '0.28.0', newest: '0.28.0-nightly.5', target: 'nightly' }),
+    ).toEqual({ install: false, reason: 'already-newest' });
+  });
+
   it('opting in from a stable build with no nightly published is a no-op', () => {
     // Membership still gets recorded by the caller; there is just nothing to install.
     expect(decide({ installed: '0.27.0', newest: '0.27.0', target: 'nightly' })).toEqual({
