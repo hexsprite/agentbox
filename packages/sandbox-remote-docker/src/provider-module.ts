@@ -8,7 +8,7 @@
  */
 
 import { loadEffectiveConfig } from '@agentbox/config';
-import { detectPortless, portlessDoctorRow } from '@agentbox/sandbox-cloud';
+import { detectPortless, portlessDoctorRow, portlessServiceStatus } from '@agentbox/sandbox-cloud';
 import { errSummary, type CheckResult } from '@agentbox/sandbox-core';
 import { probeRemoteEngine } from './remote-docker.js';
 import { getHostAlias } from './hosts-registry.js';
@@ -76,7 +76,7 @@ export async function doctorChecks(): Promise<CheckResult[]> {
 
     // Host Portless mints the <box>.localhost alias for the SSH-forwarded port;
     // without it the box's web URL degrades to a raw loopback port.
-    const portlessRes = portlessDoctorRow(await detectPortless());
+    const portlessRes = portlessDoctorRow(await detectPortless(), await portlessServiceStatus());
     return [engineRes, imageRes, portlessRes];
   } catch (err) {
     return [{ label: 'remote engine', status: 'warn', detail: errSummary(err) }];

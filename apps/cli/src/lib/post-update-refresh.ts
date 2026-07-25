@@ -32,6 +32,7 @@ import {
 } from '../commands/install-app.js';
 import { STABLE_TRAY_TAG, resolveChannel } from './channel.js';
 import { AGENTBOX_VERSION } from '../version.js';
+import { ensurePortlessProxyQuietly, resolvePortlessEnabled } from '../portless-prompt.js';
 import { log } from './prompt.js';
 import { readUpdateState, remoteCheckFresh, writeUpdateState } from './update-state.js';
 
@@ -164,7 +165,14 @@ export async function runPostUpdateRefresh(
     if (hub.ui || hub.pidAlive) {
       const stop = await stopHub();
       say(stop.stopped ? `stopped hub (pid ${String(stop.pid)})` : 'hub was not running');
-      const ep = await ensureHub();
+      // Pass the preference explicitly. Omitting it resolves to `undefined`,
+      // which `syncHubPortless` reads as "register best-effort" — so an update
+      // used to re-register `agentbox.localhost` for a user who had opted out.
+      // And bring the proxy back first when they opted *in*: an update is one
+      // of the moments a host most often finds itself with routes but no proxy.
+      const portlessEnabled = await resolvePortlessEnabled();
+      if (portlessEnabled === true) await ensurePortlessProxyQuietly();
+      const ep = await ensureHub({ portlessEnabled });
       say(`hub back up on ${ep.hostUrl}`);
     } else {
       const stop = await stopRelay();

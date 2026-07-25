@@ -151,11 +151,14 @@ export {
 // hetzner where the box is the VPS).
 export {
   detectPortless,
+  ensurePortlessProxy,
   installPortless,
   portlessAlias,
   portlessBrowserEnv,
   portlessGetUrl,
   portlessInstallHint,
+  portlessServiceHint,
+  portlessServiceStatus,
   portlessStartHint,
   portlessDoctorRow,
   portlessUnalias,
@@ -164,5 +167,6 @@ export {
   startPortlessProxy,
   PORTLESS_PROXY_PORT,
   type PortlessBrowserEnvOptions,
+  type PortlessServiceState,
   type PortlessState,
 } from '@agentbox/sandbox-docker';

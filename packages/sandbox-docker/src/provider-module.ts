@@ -12,7 +12,7 @@ import { dockerProvider } from './docker-provider.js';
 import { DEFAULT_BOX_IMAGE, imageInfo } from './image.js';
 import { volumeExists } from './docker.js';
 import { detectEngine } from './sync/host-export.js';
-import { detectPortless, portlessDoctorRow } from './portless.js';
+import { detectPortless, portlessDoctorRow, portlessServiceStatus } from './portless.js';
 import { SHARED_CLAUDE_VOLUME } from './sync/agents/claude.js';
 import { SHARED_CODEX_VOLUME } from './sync/agents/codex.js';
 import { SHARED_OPENCODE_VOLUME } from './sync/agents/opencode.js';
@@ -74,7 +74,7 @@ export async function dockerChecks(): Promise<CheckResult[]> {
     (async (): Promise<CheckResult | null> => {
       const engine = await detectEngine().catch(() => 'other' as const);
       if (engine === 'orbstack') return null;
-      return portlessDoctorRow(await detectPortless());
+      return portlessDoctorRow(await detectPortless(), await portlessServiceStatus());
     })(),
   ]);
 

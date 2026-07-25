@@ -349,12 +349,16 @@ export {
 } from './sync/host-export.js';
 export {
   detectPortless,
+  ensurePortlessProxy,
   installPortless,
+  installPortlessService,
   portlessBrowserEnv,
   portlessAlias,
   portlessUnalias,
   portlessGetUrl,
   portlessInstallHint,
+  portlessServiceHint,
+  portlessServiceStatus,
   portlessStartHint,
   portlessDoctorRow,
   PORTLESS_PROXY_PORT,
@@ -362,7 +366,9 @@ export {
   resolvePortlessHostStateDir,
   startPortlessProxy,
   startPortlessProxyRoot,
+  uninstallPortlessService,
   type PortlessBrowserEnvOptions,
+  type PortlessServiceState,
   type PortlessState,
   type RootProxyStartResult,
 } from './portless.js';

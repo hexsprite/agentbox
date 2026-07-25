@@ -55,6 +55,7 @@ import { readUpdateState, writeUpdateState } from '../lib/update-state.js';
 import { AGENTBOX_VERSION } from '../version.js';
 import { installCmuxCommand } from './install-cmux.js';
 import { installHerdrCommand } from './install-herdr.js';
+import { installPortlessCommand } from './install-portless.js';
 import { installCodexCommand, installCodexPlugin } from './install-codex.js';
 import {
   fetchTrayLatestVersion,
@@ -846,5 +847,6 @@ export const installCommand = new Command('install')
 installCommand.enablePositionalOptions();
 installCommand.addCommand(installCmuxCommand);
 installCommand.addCommand(installHerdrCommand);
+installCommand.addCommand(installPortlessCommand);
 installCommand.addCommand(installCodexCommand);
 installCommand.addCommand(installAppCommand);

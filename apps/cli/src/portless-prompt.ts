@@ -1,15 +1,16 @@
 import { confirm, log, spinner } from './lib/prompt.js';
-import { setConfigValue } from '@agentbox/config';
+import { loadEffectiveConfig, setConfigValue } from '@agentbox/config';
 import {
   detectPortless,
   type DockerEngine,
+  ensurePortlessProxy,
   installPortless,
   portlessInstallHint,
+  portlessServiceHint,
   portlessStartHint,
   resetPortlessCache,
-  startPortlessProxy,
-  startPortlessProxyRoot,
 } from '@agentbox/sandbox-docker';
+import { offerPortlessService } from './commands/install-portless.js';
 
 export interface PortlessPromptArgs {
   engine: DockerEngine;
@@ -56,42 +57,72 @@ export async function setupPortlessHost(
 
   if (state.proxyRunning) {
     log.info('Portless proxy already running — boxes will use it.');
+    // Running now, but a manually started proxy is gone after the next reboot.
+    if (allowRootPrompt) await offerPortlessService();
     return;
   }
 
-  // Try the clean :443 proxy first (asks for the host password once). No
-  // spinner around it — the elevation prompt is modal and shouldn't race one.
+  // `ensurePortlessProxy` runs the same ladder (clean :443 first when we're
+  // allowed to ask for a password, else the silent no-root :1355 proxy). No
+  // spinner around the root attempt — the elevation prompt is modal and
+  // shouldn't race one.
   if (allowRootPrompt) {
     log.info(
       'Starting the Portless proxy on https://<box>.localhost — you may be asked for your password.',
     );
-    const rootResult = await startPortlessProxyRoot();
-    resetPortlessCache();
-    state = await detectPortless();
-    if (state.proxyRunning) {
-      log.success('Portless proxy started on https://<box>.localhost');
-      return;
-    }
-    if (rootResult === 'cancelled') {
-      log.info('Password prompt dismissed — falling back to the no-root port.');
-    }
+    state = await ensurePortlessProxy({ allowRootPrompt: true });
+  } else {
+    const s = spinner();
+    s.start('starting portless proxy (no TLS, port 1355 — no root needed)');
+    state = await ensurePortlessProxy({ allowRootPrompt: false });
+    // No port asserted here: the fallback usually lands on :1355, but if a root
+    // :443 proxy is already up it is reused instead. The real URL is resolved
+    // via `portless get` at create.
+    s.stop(state.proxyRunning ? 'portless proxy started' : 'portless proxy did not start');
   }
 
-  // Fallback: no-root proxy on the high port (http://<box>.localhost:1355).
-  const s = spinner();
-  s.start('starting portless proxy (no TLS, port 1355 — no root needed)');
-  await startPortlessProxy();
-  resetPortlessCache();
-  state = await detectPortless();
-  if (state.proxyRunning) {
-    // No port asserted here: the fallback usually lands on :1355, but if the
-    // root :443 start actually succeeded (a racy first probe), that proxy is
-    // reused instead. The real URL is resolved via `portless get` at create.
-    s.stop('portless proxy started');
-  } else {
-    s.stop('portless proxy did not start');
+  if (!state.proxyRunning) {
     log.warn(`Could not start the Portless proxy — run \`${portlessStartHint()}\` yourself.`);
+    return;
   }
+  if (allowRootPrompt) {
+    log.success('Portless proxy started');
+    await offerPortlessService();
+  }
+}
+
+/**
+ * Effective `portless.enabled`, resolved against the cwd so the global layer is
+ * picked up. Best effort — a config read failure leaves it `undefined`, which
+ * every caller treats as "never decided", not as an opt-out.
+ */
+export async function resolvePortlessEnabled(): Promise<boolean | undefined> {
+  try {
+    const cfg = await loadEffectiveConfig(process.cwd());
+    return cfg.effective.portless.enabled;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Bring an already-opted-in host back to a working state without asking
+ * anything. A proxy dies on reboot while its route registry survives, so
+ * `portless get` keeps answering with URLs that resolve to nothing until
+ * something restarts it — and before this, nothing did. Every entry point that
+ * is about to hand out a `<box>.localhost` URL calls this.
+ *
+ * Silent by design: it never prompts for a password (the tray app, the queue
+ * worker and `self-update` all reach here), so it lands on the no-root
+ * `:1355` proxy unless a better one is already up. Warns once, at most.
+ */
+export async function ensurePortlessProxyQuietly(): Promise<void> {
+  const state = await ensurePortlessProxy({ allowRootPrompt: false });
+  if (!state.installed || state.proxyRunning) return;
+  log.warn(
+    `Portless proxy is not running — box URLs fall back to loopback ports. ` +
+      `Fix it with \`${portlessServiceHint()}\`.`,
+  );
 }
 
 /**
@@ -106,7 +137,13 @@ export async function setupPortlessHost(
  * the engine is OrbStack (which already has .orb.local).
  */
 export async function maybePromptPortless(args: PortlessPromptArgs): Promise<boolean> {
-  if (args.enabled !== undefined) return args.enabled;
+  if (args.enabled !== undefined) {
+    // Already decided — but "decided" only ever meant the *preference* was
+    // stored. The proxy itself is not durable (a reboot kills it), so an
+    // opted-in host used to sit here with dead `<box>.localhost` URLs forever.
+    if (args.enabled) await ensurePortlessProxyQuietly();
+    return args.enabled;
+  }
   if (args.engine === 'orbstack') return false;
   // Non-interactive (`--yes`, CI, no TTY): can't prompt — adopt a running proxy
   // instead of forcing the user to opt in from a terminal first.
@@ -147,7 +184,10 @@ export async function resolvePortlessNonInteractive(args: {
   enabled: boolean | undefined;
   cwd: string;
 }): Promise<boolean> {
-  if (args.enabled !== undefined) return args.enabled;
+  if (args.enabled !== undefined) {
+    if (args.enabled) await ensurePortlessProxyQuietly();
+    return args.enabled;
+  }
   if (args.engine === 'orbstack') return false;
   const state = await detectPortless();
   if (state.proxyRunning) {

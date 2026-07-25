@@ -140,6 +140,28 @@ async function readHubPortlessUrl(): Promise<string | null> {
 }
 
 /**
+ * The hub's Portless URL *right now*, or null when it wouldn't resolve.
+ *
+ * Deliberately not just the cached file. The cache is written once, at hub
+ * start, but both of its inputs can change underneath it: the proxy can die
+ * (URL resolves to nothing) and it can come back in a different mode (the
+ * no-root `:1355` no-TLS proxy vs the root `:443` HTTPS one), which changes the
+ * URL's scheme *and* port. Callers — `agentbox hub status`, the tray app — get a
+ * URL they can actually open, or none at all.
+ */
+async function currentHubPortlessUrl(): Promise<string | null> {
+  const cached = await readHubPortlessUrl();
+  if (cached === null) return null;
+  const portless = await detectPortless();
+  if (!portless.proxyRunning) return null;
+  const url = await portlessGetUrl(HUB_PORTLESS_ALIAS);
+  // Keep the cache honest for the next reader (and for anything that reads the
+  // file directly) when the proxy came back in a different mode.
+  if (url !== cached) await writeFile(HUB_PORTLESS_FILE, url, 'utf8').catch(() => {});
+  return url;
+}
+
+/**
  * Register (or tear down) the hub's `agentbox.localhost` Portless alias and
  * return its resolved URL. Best-effort and never throws — a Portless failure
  * just leaves the hub on its loopback URL, exactly like the box path.
@@ -147,6 +169,14 @@ async function readHubPortlessUrl(): Promise<string | null> {
  * Registers whenever Portless is installed and the engine isn't OrbStack, unless
  * `enabled === false` (explicit opt-out). `undefined` (never prompted) still
  * registers — the hub URL is a pure host-side convenience.
+ *
+ * Registering the route and *advertising* the URL are two different things. The
+ * route is written whenever Portless is installed, proxy or no proxy: it costs
+ * nothing and makes the URL work the moment a proxy comes up. The URL is only
+ * returned when a proxy is actually live — otherwise `portless get` answers
+ * from the persisted registry and the hub would print an address (`agentbox
+ * .localhost:1355`) that nothing is listening on, which is precisely what a
+ * reboot leaves behind.
  */
 async function syncHubPortless(enabled: boolean | undefined): Promise<string | undefined> {
   const teardown = async (): Promise<undefined> => {
@@ -163,9 +193,12 @@ async function syncHubPortless(enabled: boolean | undefined): Promise<string | u
     if (!portless.installed) return await teardown();
     await portlessAlias(HUB_PORTLESS_ALIAS, PORT);
     const url = await portlessGetUrl(HUB_PORTLESS_ALIAS);
+    // The file records that the hub *wants* a Portless URL (it is how a later
+    // `hub status` knows the alias is ours rather than opted out); whether that
+    // URL is usable is re-decided on every read against a live proxy.
     await mkdir(dirname(HUB_PORTLESS_FILE), { recursive: true });
     await writeFile(HUB_PORTLESS_FILE, url, 'utf8');
-    return url;
+    return portless.proxyRunning ? url : undefined;
   } catch {
     return undefined;
   }
@@ -398,7 +431,7 @@ export async function getHubStatus(): Promise<HubStatus> {
   const pid = await readPid(HUB_PID_FILE);
   const pidAlive = pid !== null && (await processAlive(pid));
   const health = await fetchHealthz(300);
-  const ep = await endpointFor((await readHubPortlessUrl()) ?? undefined);
+  const ep = await endpointFor((await currentHubPortlessUrl()) ?? undefined);
   return {
     running: health !== null,
     ui: health?.ui === true,

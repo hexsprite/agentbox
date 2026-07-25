@@ -6,6 +6,7 @@ import { hostOpenCommand } from '@agentbox/sandbox-core';
 import { Command } from 'commander';
 import { handleLifecycleError } from './_errors.js';
 import { rehydrateFromState } from './relay.js';
+import { ensurePortlessProxyQuietly, resolvePortlessEnabled } from '../portless-prompt.js';
 import { resolveCustodyTarget, controlPlaneSubcommands, probeControlPlaneStatus } from './control-plane.js';
 import { loadControlPlaneEnv } from '../control-plane/env-file.js';
 import { CustodyClient } from '../control-plane/custody-client.js';
@@ -14,17 +15,16 @@ import { pullBoxSshKeys } from '../control-plane/hub-pull.js';
 import { adoptHubBox, HubBoxNotFoundError } from '../control-plane/hub-adopt.js';
 
 /**
- * Effective `portless.enabled` for the hub's `agentbox.localhost` alias. The hub
- * is host-wide, so we resolve against the cwd (picks up the global layer). Best
- * effort — a config read failure just leaves it undefined (register best-effort).
+ * Resolve `portless.enabled` and, when the user has opted in, make sure a proxy
+ * is actually up before the hub reports its URL — a proxy does not survive a
+ * reboot, so "the hub is on agentbox.localhost" was regularly a lie. Only
+ * `true` starts one: an unset preference still registers the alias (that costs
+ * nothing) but must not spawn a daemon nobody asked for.
  */
-async function resolvePortlessEnabled(): Promise<boolean | undefined> {
-  try {
-    const cfg = await loadEffectiveConfig(process.cwd());
-    return cfg.effective.portless.enabled;
-  } catch {
-    return undefined;
-  }
+async function resolvePortlessForHub(): Promise<boolean | undefined> {
+  const enabled = await resolvePortlessEnabled();
+  if (enabled === true) await ensurePortlessProxyQuietly();
+  return enabled;
 }
 
 /** Best-effort: open the hub URL in the host browser (never throws). */
@@ -163,7 +163,7 @@ const startSub = new Command('start')
       s.start('starting hub');
       const ep = await ensureHub({
         onLog: (line) => s.message(line),
-        portlessEnabled: await resolvePortlessEnabled(),
+        portlessEnabled: await resolvePortlessForHub(),
       });
       await rehydrateFromState();
       s.stop(`hub running on ${ep.hostUrl}`);
@@ -201,7 +201,7 @@ const restartSub = new Command('restart')
       try {
         const ep = await ensureHub({
           onLog: (line) => s2.message(line),
-          portlessEnabled: await resolvePortlessEnabled(),
+          portlessEnabled: await resolvePortlessForHub(),
         });
         await rehydrateFromState();
         s2.stop(`hub running on ${ep.hostUrl}`);
