@@ -4,7 +4,6 @@
     "---Getting started---",
     "index",
     "core-concepts",
-    "nightly",
     "---Guides---",
     "teleport-a-project",
     "run-an-agent",
@@ -43,6 +42,7 @@
     "agentbox-yaml",
     "configuration",
     "environment",
+    "nightly",
     "build-a-provider"
   ]
 }
