@@ -1,6 +1,7 @@
 # Nightly release channel — plan of record
 
-Status: **in progress** (started 2026-07-25).
+Status: **implemented** 2026-07-25 — all five phases landed; the live pass (below) needs the first
+real nightly publish.
 
 ## Why
 
@@ -82,15 +83,45 @@ immune to that churn: the base is `0.28.0` until `0.28.0` ships, then `0.29.0`.
 
 ## Phases
 
-- [ ] **Phase 0** — this doc.
-- [ ] **Phase 1** — CLI channel plumbing: new `apps/cli/src/lib/channel.ts`, prerelease ordering in
-      `semver-lite.ts`, thread the channel through `update-check.ts` / `update.ts` / `install-app.ts`,
-      sticky-membership persist, `update.channel` config key, unit tests.
-- [ ] **Phase 2** — publishing: `nightly` arm in `.claude/commands/release-notes.md`; `tray-nightly`
-      support in `../agentbox-tray/scripts/publish-release.sh`.
-- [ ] **Phase 3** — CI coverage for the `nightly` branch (`box-image.yml`, `ci.yml`).
-- [ ] **Phase 4** — tray app channel awareness (`UpdateChecker.swift`).
-- [ ] **Phase 5** — docs (`nightly.mdx`, `cli.mdx`, `development.md`, `README.md`, tray docs).
+All five implemented 2026-07-25 (branch `feat/nightly-channel`). What remains is the live pass below.
+
+- [x] **Phase 0** — this doc.
+- [x] **Phase 1** — CLI channel plumbing: `apps/cli/src/lib/channel.ts` (`channelOfVersion`,
+      `effectiveChannel`/`resolveChannel`, `npmDistTags`/`trayReleaseTags`, `bestOf`,
+      `persistChannel`), full prerelease ordering in `semver-lite.ts`, the channel threaded through
+      `update-check.ts` / `update.ts` / `install-app.ts`, sticky-membership persist in `self-update`,
+      the `update.channel` config key, and 30 unit tests.
+      The decision function is split out as pure `effectiveChannel` because `GLOBAL_CONFIG_FILE`
+      resolves `$HOME` at import time and apps/cli tests have no HOME isolation — a test of
+      `resolveChannel`/`persistChannel` would read and *write* the real global config.
+- [x] **Phase 2** — publishing: `nightly` arm (section 9) in `.claude/commands/release-notes.md`;
+      `tray-nightly` support in `../agentbox-tray/scripts/publish-release.sh`, deriving the channel
+      from the version string so the tag can't disagree with it.
+- [x] **Phase 3** — `box-image.yml` and `ci.yml` run on `nightly`; the floating `:latest` /
+      `:<version>` tags gated to `main` / `v*` refs.
+- [x] **Phase 4** — tray `UpdateChecker.swift`: channel-aware CLI + app checks, both polling stable
+      and nightly on the nightly channel, and a full prerelease-aware `isNewer`.
+- [x] **Phase 5** — docs: `apps/web/content/docs/nightly.mdx` (+ `meta.json`), `cli.mdx`,
+      `configuration.mdx`, `docs/development.md` (Branches + "Cutting a nightly"), `README.md`,
+      `CHANGELOG.md`, and the tray's `README.md` / `CLAUDE.md`.
+
+## Still to do — the live pass
+
+Nothing here is testable without publishing, so it has to happen on the first real nightly:
+
+1. `npm publish --tag nightly` and then **`npm view @madarco/agentbox dist-tags`** — `latest` must be
+   unchanged. This is the one irreversible step.
+2. Install the published nightly into a scratch prefix
+   (`npm i -g @madarco/agentbox@nightly --prefix /tmp/nightly-check`) and confirm
+   `agentbox --version` reports the prerelease and `self-update --dry-run` names a nightly version.
+3. Confirm the GHCR fingerprint tag for the nightly commit exists
+   (`docker buildx imagetools inspect ghcr.io/madarco/agentbox/box:sha-<16hex>`, sha from
+   `node apps/cli/scripts/print-box-context-sha.mjs`) and that `:latest` still points at the
+   main-built manifest.
+4. **The crossover**, once a stable release follows a nightly: a machine on `0.28.0-nightly.*` must be
+   offered `0.28.0`, and after updating, `agentbox config get update.channel` must still read
+   `nightly`. The last assertion is the one that catches silently dropping off the channel — the first
+   two can pass while it fails.
 
 ## Gotchas found while planning
 

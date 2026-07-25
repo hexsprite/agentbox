@@ -334,6 +334,7 @@ The remaining infrastructure knobs — mostly advanced.
 | `maintenance.pruneProjectConfigs` | bool | `true` | periodically delete `~/.agentbox/projects/<hash>/` dirs whose source folder is gone |
 | `maintenance.pruneProjectConfigsEvery` | int | `50` | run the orphan sweep every N successful `agentbox create` |
 | `update.check` | bool | `true` | daily background check for a newer published CLI (npm) and menu-bar app (release checksum), plus the "newer version available" nudge; at most one network probe per 24h — `false` disables both |
+| `update.channel` | enum | `auto` | release channel `self-update` and `install app` follow: `auto` follows the installed build, `nightly` opts into [pre-release builds](/docs/nightly), `stable` opts back out. Nightly installs the newest build of *either* channel, so a stable release supersedes the nightlies before it |
 
 See [web apps and tunnels](/docs/web-apps-and-tunnels), [local Docker](/docs/local-docker), [sync and git](/docs/sync-and-git), and [browser and screen](/docs/browser-and-screen).
 

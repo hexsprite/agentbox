@@ -13,6 +13,11 @@ CLI, not the raw commits.
 
 ### Added
 
+- **Nightly release channel.** `npm i -g @madarco/agentbox@nightly` (or
+  `agentbox self-update --channel nightly`) opts into pre-release builds; the
+  channel always installs the newest build of either channel, so stable releases
+  still reach you automatically. `--channel stable` opts back out. New
+  `update.channel` config key. See https://agent-box.sh/docs/nightly.
 - `agentbox queue list` now also shows the control box's box-creation queue —
   where background `-i` cloud runs actually go when a hub is configured. New
   `agentbox hub jobs list` / `hub jobs show <id>` inspect it directly.
