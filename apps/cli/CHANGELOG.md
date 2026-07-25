@@ -13,6 +13,16 @@ CLI, not the raw commits.
 
 ### Added
 
+- **Deployed hub (control box).** `agentbox hub setup` (or `hub deploy hetzner |
+  vercel`) puts a full hub — relay, web UI, and a create worker — on a VPS you
+  own. Cloud boxes are then built and run **there**, so they keep going with your
+  laptop closed, including background `-i` agent runs. Create them from the web
+  UI, or `agentbox create --via-hub`. See https://agent-box.sh/docs/deployed-hub.
+- **Your laptop works as a thin client of it.** `agentbox ls` and `dashboard`
+  list hub-created boxes, and `attach`/`cp`/`url`/`destroy` adopt one on first
+  use — no manual step. SSH keys are fetched from the hub's custody store on
+  demand, and bake records are shared, so the PC and the control box stop
+  re-baking the same base into two snapshots.
 - **Nightly release channel.** `npm i -g @madarco/agentbox@nightly` (or
   `agentbox self-update --channel nightly`) opts into pre-release builds; the
   channel always installs the newest build of either channel, so stable releases
@@ -24,6 +34,10 @@ CLI, not the raw commits.
 
 ### Changed
 
+- **With a control box configured, cloud creates now go to it by default** —
+  `agentbox create` and foreground `claude`/`codex`/`opencode` on a cloud
+  provider. `--local` or `cloud.viaHub=false` keeps them on this machine; docker
+  and remote-docker are unaffected.
 - The hosted-hub commands moved from `agentbox control-plane *` into the one
   `agentbox hub *` group (`hub setup`/`deploy`/`boxes`/`prompts`/`credentials`/
   `custody`/…). `agentbox hub status` now reports the configured remote control
