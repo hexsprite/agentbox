@@ -226,12 +226,12 @@ Handled honestly rather than faked:
 | `exec` default user | **root** (via `sudo -n -H bash -lc`) | `SpawnOptions` has no `user` field and `sprite exec` lands as the unprivileged `sprite` account. Defaulting to root matches hetzner/digitalocean/daytona and keeps this backend clear of the `vercel`/`e2b` carve-outs in the scaffold's `carry.ts` + `workspace-resync.ts`. |
 | agent installs | **symlinked** from `$SPRITE_HOME/.local` | Fly's base already carries claude + codex, ~440MB of them. Copying costs more wall-clock than the rest of the install combined, and re-downloading claude is both slower and the one step whose CDN 403s datacenter egress. The installer `chmod 0755`s `/home/sprite` to make them traversable — not a real privilege change, since `vscode` has NOPASSWD sudo and could already read them. |
 | VNC / Chromium | **opt-in** (`CloudProvisionRequest.vnc`) | ~45s. On a baked provider that's paid once; here it's paid on every create. Baked providers ignore the new field. |
-| `buildAttach` | **overridden** | The shared builder appends an SSH-shaped `-t '<cmd>'`. `sprite console` takes no command argument, so interactive attach connects to a bare shell and types one short line to run a staged script (the daytona trick), while detached/logs use `sprite exec` with the command inline. |
-| attach user | `sudo -u vscode` inside the session | `sprite console` logs in as the platform's `sprite` account, not the `vscode` user everything AgentBox installs lives under. |
-| host prerequisite | the **`sprite` CLI** | Both attach (`sprite console`) and the bridge tunnel (`sprite proxy`) shell out to it. It gets its own `agentbox doctor` row rather than surfacing as a create-time surprise. Driven with `SPRITE_TOKEN`/`SPRITE_ORG`/`SPRITE_URL` from AgentBox's own secrets, so the CLI and the SDK always act on the same credentials. |
+| `buildAttach` | **overridden** | The shared builder appends an SSH-shaped `-t '<cmd>'`; the `sprite` CLI spells it `exec --tty -- <argv>`. One shape for every kind, `--tty` only when interactive. See [Why attach uses `sprite exec --tty`](#why-attach-uses-sprite-exec---tty-not-sprite-console). |
+| attach user | `sudo -u vscode` in the exec argv | `sprite exec` runs as the platform's `sprite` account, not the `vscode` user everything AgentBox installs lives under. |
+| host prerequisite | the **`sprite` CLI** | Both attach (`sprite exec --tty`) and the bridge tunnel (`sprite proxy`) shell out to it. It gets its own `agentbox doctor` row rather than surfacing as a create-time surprise. Driven with `SPRITE_TOKEN`/`SPRITE_ORG`/`SPRITE_URL` from AgentBox's own secrets, so the CLI and the SDK always act on the same credentials. |
 
 Explicitly **not** in `PERSISTENT_SSH_PROVIDERS` / `IDE_PROVIDERS` /
-`SSH_MOUNT_PROVIDERS`: `sprite console` is not real SSH, so there is no sshfs
+`SSH_MOUNT_PROVIDERS`: `sprite exec` is not real SSH, so there is no sshfs
 mount and no VS Code Remote-SSH.
 
 ## Live e2e results

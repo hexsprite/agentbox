@@ -954,10 +954,16 @@ org means flipping the sprite to `auth: 'public'`, which stays the user's call.
   delete it — which broke agent-credential seeding until `uploadFile` started
   handing ownership over.
 - **`buildAttach` is overridden.** The shared builder appends an SSH-shaped
-  `-t '<cmd>'`; `sprite console` takes no command argument. Interactive attach
-  connects to a bare shell and types one short line to run a staged script (the
-  daytona trick), then `sudo -u vscode` into it; detached/logs use `sprite exec`
-  with the command inline.
+  `-t '<cmd>'`; the `sprite` CLI spells the same thing as `exec --tty -- <argv>`.
+  Every kind uses one shape — `sprite exec [--tty] -- sudo -u vscode bash -lc
+  '<inner>'` — with `--tty` only for interactive sessions.
+
+  It deliberately does NOT use `sprite console` plus `AttachSpec.initialInput`
+  (the daytona trick of typing the command at the prompt). That was the first
+  implementation and it never worked: the handoff arms 400ms after the remote's
+  first byte, and console emits terminal capability queries immediately, well
+  before `bash --login` is ready, so the line was swallowed and no tmux session
+  was ever created. A command in argv has no race to lose.
 - **The `sprite` CLI is a host prerequisite**, with its own doctor row. It is
   driven with `SPRITE_TOKEN`/`SPRITE_ORG`/`SPRITE_URL` from AgentBox's own
   secrets so the CLI and the SDK always act on the same credentials.
@@ -965,7 +971,7 @@ org means flipping the sprite to `auth: 'public'`, which stays the user's call.
   `CloudProvisionRequest.vnc` lets `--no-vnc` skip it. Baked providers ignore the
   field.
 - Not in `PERSISTENT_SSH_PROVIDERS` / `IDE_PROVIDERS` / `SSH_MOUNT_PROVIDERS`:
-  `sprite console` is not real SSH, so no sshfs mount and no VS Code Remote-SSH.
+  `sprite exec` is not real SSH, so no sshfs mount and no VS Code Remote-SSH.
 
 ### 3f.5 Hard platform limits
 
