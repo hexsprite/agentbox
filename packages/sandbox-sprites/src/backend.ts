@@ -438,6 +438,12 @@ export const spritesBackend: CloudBackend = {
         }
       },
     );
+    // Again, after the delete. The host poller is still live at this point —
+    // `forgetBoxFromRelay` only runs once the provider's own destroy returns —
+    // so a failed poll in between can drive `refreshPreviewUrl` and mint a
+    // fresh tunnel. That path now refuses to spawn for a missing sprite, and
+    // this reaps anything that slipped through the gap.
+    await tunnel.closeAll(h.sandboxId);
   },
 
   async state(h: CloudHandle): Promise<CloudState> {
@@ -500,6 +506,16 @@ export const spritesBackend: CloudBackend = {
     if (port === SPRITES_INGRESS_PORT) {
       urlCache.delete(h.sandboxId);
       return { url: await spriteUrl(h.sandboxId) };
+    }
+    // Confirm the sprite still exists before spending a tunnel on it. The host
+    // poller calls this on any connection failure — including the one caused by
+    // `destroy` deleting the sprite out from under it, in the window before
+    // `forgetBoxFromRelay` stops the poller. Without this check that recovery
+    // spawns a fresh `sprite proxy` for a sprite that is already gone, and
+    // nothing is left to reap it.
+    if ((await getSprite(h.sandboxId)) === null) {
+      await tunnel.closeAll(h.sandboxId);
+      throw new Error(`sprites: sprite ${h.sandboxId} no longer exists`);
     }
     const localPort = await tunnel.refresh(h.sandboxId, port);
     return { url: `http://127.0.0.1:${String(localPort)}` };

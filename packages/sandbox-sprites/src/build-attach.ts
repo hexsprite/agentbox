@@ -4,24 +4,31 @@
  *
  * The shared `buildAttach` in `@agentbox/sandbox-cloud` assumes an SSH-shaped
  * transport: it appends `-t '<inner command>'` to whatever `attachArgv`
- * returns. `sprite console` takes no command argument at all (it is
- * specifically "open an interactive shell"), and `sprite exec` spells the same
- * thing differently, so the two attach modes need different argv rather than
- * one argv plus a suffix. Hence the override.
+ * returns. The `sprite` CLI spells the same thing as `exec --tty -- <argv>`,
+ * so the argv can't be built by suffixing — hence this override.
  *
- *   - interactive  → `sprite console -o <org> -s <name>`, plus `initialInput`.
- *   - detached/logs → `sprite exec -o <org> -s <name> -- sudo -u vscode …`.
+ * Every attach kind uses ONE shape:
  *
- * Two wrinkles the inner command has to absorb:
+ *     sprite exec -o <org> -s <name> [--tty] -- sudo -n -H -u vscode bash -lc '<inner>'
  *
- *   1. `sprite console` logs in as the platform's `sprite` account, not the
- *      `vscode` user AgentBox installs everything under. So the staged script
- *      is run through `sudo -u vscode -H`.
- *   2. The inner command is far too long and quote-heavy to type at a prompt —
- *      a terminal line editor mangles it onto a `>` continuation. So we stage
- *      it as a file with a plain exec first (no TTY needed) and type one short
- *      line to run it. Same trick the shared builder uses for daytona, whose
- *      SSH gateway withholds a TTY from exec sessions.
+ * with `--tty` only for interactive sessions. Detached pre-starts and `logs`
+ * deliberately want a non-interactive exec that runs and exits.
+ *
+ * Two things this deliberately does NOT do, both learned from the live e2e:
+ *
+ *   - It does not use `sprite console`. Console opens a shell and takes no
+ *     command argument, so the inner command would have to be TYPED at the
+ *     prompt via `AttachSpec.initialInput` (the trick daytona needs). That
+ *     handoff arms 400ms after the remote's first byte — and `sprite console`
+ *     emits terminal capability queries immediately, long before `bash --login`
+ *     is ready, so the line was swallowed and no tmux session was ever created.
+ *     Passing the command in argv has no race to lose.
+ *   - It does not stage a script in /tmp first. That existed only to keep a
+ *     long quote-heavy command off an interactive line editor. In argv, the
+ *     length and quoting stop mattering.
+ *
+ * `sudo -u vscode` is still required: `sprite exec` runs as the platform's own
+ * `sprite` account, not the user AgentBox installs everything under.
  */
 
 import {
@@ -30,8 +37,7 @@ import {
   type BoxRecord,
   type BuildAttachOptions,
 } from '@agentbox/core';
-import { attachScriptPath, hostTermForCloud, renderInnerCommand } from '@agentbox/sandbox-cloud';
-import { spritesBackend } from './backend.js';
+import { hostTermForCloud, renderInnerCommand } from '@agentbox/sandbox-cloud';
 import { requireSpriteCli, spriteSelector } from './sprite-cli.js';
 
 /** Box user AgentBox standardizes on; created by install-sprite-base.sh. */
@@ -48,50 +54,31 @@ export async function buildSpritesAttach(
   }
 
   const bin = requireSpriteCli();
-  const selector = spriteSelector(name);
   const inner = renderInnerCommand(kind, opts);
   // Forward the host's TERM so tmux inside the box negotiates the same
   // capabilities; renderInnerCommand's own guard downgrades it when the box's
   // terminfo doesn't carry the value (e.g. xterm-ghostty).
   const hostTerm = hostTermForCloud();
 
-  // Detached pre-start and `logs` genuinely want a non-interactive exec that
-  // runs a command and exits — `sprite exec` is exactly that. No TTY: a
-  // detached build only creates the tmux session, and `logs` is a pipe.
-  if (opts?.detached || kind === 'logs') {
-    return {
-      argv: [
-        bin,
-        'exec',
-        ...selector,
-        '--',
-        'sudo',
-        '-n',
-        '-H',
-        '-u',
-        BOX_USER,
-        'bash',
-        '-lc',
-        inner,
-      ],
-      env: { AGENTBOX_HOST_TERM: hostTerm },
-    };
-  }
+  // A detached build only creates the tmux session and must exit; `logs` is a
+  // pipe. Neither wants a terminal.
+  const interactive = !opts?.detached && kind !== 'logs';
 
-  const scriptPath = attachScriptPath(opts?.sessionName ?? kind);
-  const b64 = Buffer.from(inner, 'utf8').toString('base64');
-  // Stage as root (the backend's default) and hand it to vscode, so the script
-  // is readable by the user that will run it regardless of umask.
-  await spritesBackend.exec(
-    { sandboxId: name },
-    `printf %s '${b64}' | base64 -d > ${scriptPath} && chown ${BOX_USER}:${BOX_USER} ${scriptPath} && chmod 700 ${scriptPath}`,
-  );
+  const argv = [
+    bin,
+    'exec',
+    ...spriteSelector(name),
+    ...(interactive ? ['--tty'] : []),
+    '--',
+    'sudo',
+    '-n',
+    '-H',
+    '-u',
+    BOX_USER,
+    'bash',
+    '-lc',
+    inner,
+  ];
 
-  return {
-    argv: [bin, 'console', ...selector],
-    env: { AGENTBOX_HOST_TERM: hostTerm },
-    // `exec` so the script replaces the login shell: the user never lands back
-    // on the `sprite` account's prompt when they detach from tmux.
-    initialInput: `exec sudo -n -H -u ${BOX_USER} bash ${scriptPath}\n`,
-  };
+  return { argv, env: { AGENTBOX_HOST_TERM: hostTerm } };
 }

@@ -304,6 +304,31 @@ describe('sprites backend specifics', () => {
     );
   });
 
+  // Regression: the host poller outlives backend.destroy (forgetBoxFromRelay
+  // only runs after the provider's destroy returns), so a failed poll in that
+  // window drove recoverPreviewUrl -> a fresh `sprite proxy` for a sprite that
+  // was already gone, and nothing was left to reap it.
+  it('refuses to re-mint a tunnel for a sprite that no longer exists', async () => {
+    const h = await spritesBackend.provision({ name: 'ghosted', image: 'x' });
+    await spritesBackend.previewUrl(h, 8788);
+    expect(forwarded.size).toBe(1);
+    sprites.delete('ghosted');
+    await expect(spritesBackend.refreshPreviewUrl!(h, 8788)).rejects.toThrow(/no longer exists/);
+    expect(forwarded.size).toBe(0);
+  });
+
+  it('closes tunnels after the delete as well, to catch that race', async () => {
+    const h = await spritesBackend.provision({ name: 'reaped', image: 'x' });
+    await spritesBackend.previewUrl(h, 8788);
+    // Simulate the poller re-minting mid-destroy: the deletion happens first,
+    // then a stray tunnel appears, and destroy's trailing sweep must take it.
+    const { closeAll } = await import('../src/sprite-proxy.js');
+    void closeAll;
+    await spritesBackend.destroy(h);
+    expect(forwarded.size).toBe(0);
+    expect(sprites.has('reaped')).toBe(false);
+  });
+
   it('sizes the sprite from a cpu-memory-disk string', async () => {
     const h = await spritesBackend.provision({ name: 'sized', image: 'x', size: '4-8-40' });
     expect(h.resources).toEqual({ cpu: 4, memory: 8, disk: 40 });
