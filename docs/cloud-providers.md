@@ -1078,16 +1078,42 @@ The mock implements every required + optional method on `CloudBackend`,
 records calls in invocation order (`backend.calls`), and lets tests
 inject failures via `beforeCall` (handy for retry-wrapper testing).
 
-The contract test suite in
-`packages/sandbox-cloud/test/mock-backend-contract.test.ts` exercises:
+The portable assertions live in a **shared conformance suite**,
+`packages/sandbox-cloud/test/cloud-backend-conformance-suite.ts`, which every
+backend imports rather than copies:
 
-- The full lifecycle: `provision → start/stop/pause/resume → destroy`.
-- `list()` shape (`CloudSandboxSummary`).
-- Stable URLs from `previewUrl` / `signedPreviewUrl`.
-- `createSnapshot` / `deleteSnapshot`, `ensureVolume`.
-- `createCloudProvider` composition (resolveUrl prefers signed,
-  buildAttach uses attachArgv when present).
-- Failure injection (so backends can validate their retry semantics).
+```ts
+import { runCloudBackendConformance } from './cloud-backend-conformance-suite.js';
+runCloudBackendConformance('mybackend', () => ({ backend: myBackend }));
+```
+
+It covers:
+
+- Identity invariants: a non-empty `name`, a `timeoutModel` from the declared
+  vocabulary, a sane `webProxyPort`, and `pause` present whenever
+  `timeoutModel === 'inactivity'` (without it, an idle box bills forever —
+  the host's own polling keeps resetting the provider's clock).
+- The full lifecycle: `provision → start/stop/pause/resume → destroy`, plus
+  `destroy` idempotency and `get`/`state` on a sandbox that never existed.
+- `exec` result shape, and that a non-zero exit comes back as a result rather
+  than a throw.
+- An upload → download byte round-trip, and `listFiles` entry shape.
+- Preview URL stability, plus `refreshPreviewUrl` / `signedPreviewUrl` when
+  present.
+- Optional capabilities detected by presence: `list()` shape
+  (`CloudSandboxSummary`), snapshot support being coherent rather than
+  half-declared, `ensureVolume` stability, `attachArgv` shape.
+
+Where a platform genuinely can't satisfy an assertion, declare it through the
+capabilities argument instead of dropping the suite — sprites passes
+`{ pauseIsObservable: false, distinctStopState: false }` because its `pause()`
+is host-side (it drops the tunnels and lets the sandbox sleep on its own).
+`packages/sandbox-sprites/test/conformance.test.ts` is a worked example of
+running a real backend against an in-memory fake of its SDK.
+
+`packages/sandbox-cloud/test/mock-backend-contract.test.ts` keeps only what is
+mock-specific on top of the suite: the call recorder, the `beforeCall` failure
+injection, and the exact URL/argv shapes the mock fabricates.
 
 To certify a new backend (`@agentbox/sandbox-vercel`, say): copy the
 suite, swap the factory, and ensure every test still passes. Any

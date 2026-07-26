@@ -134,9 +134,26 @@ the helpers each needs, so it's all buildable on `@madarco/agentbox-provider-sdk
 
 ## Certify the backend
 
-Copy the cloud-backend contract suite
-(`packages/sandbox-cloud/test/mock-backend-contract.test.ts` +
-`makeMockCloudBackend`), swap in your backend, and ensure every test passes.
+Run the shared conformance suite against your backend — don't copy it, import
+it. `packages/sandbox-cloud/test/cloud-backend-conformance-suite.ts` exports
+`runCloudBackendConformance(name, factory, capabilities?)`:
+
+```ts
+import { runCloudBackendConformance } from '@agentbox/sandbox-cloud/test/cloud-backend-conformance-suite.js';
+import { myBackend } from '../src/backend.js';
+
+runCloudBackendConformance('myprovider', () => ({ backend: myBackend }));
+```
+
+Drive it against a stubbed SDK (see `packages/sandbox-sprites/test/conformance.test.ts`
+for a worked example with an in-memory fake control plane) so the suite stays
+free of network and spend. Optional `CloudBackend` methods are detected by
+presence, so omitting `createSnapshot` or `list` just skips those assertions.
+
+Where your platform genuinely can't satisfy an assertion, declare it through the
+capabilities argument rather than dropping the suite — e.g. sprites passes
+`{ pauseIsObservable: false, distinctStopState: false }` because its `pause()`
+is host-side (it drops the tunnels and lets the sandbox sleep on its own).
 
 ## Operating a plugin (users)
 

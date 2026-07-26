@@ -1,13 +1,23 @@
 /**
- * Backend contract tests — exercise every required + optional method on
- * `CloudBackend` against `makeMockCloudBackend`. Future cloud-backend
- * implementations can adapt this suite (replace the import + the factory)
- * to validate compliance.
+ * Backend contract tests for `makeMockCloudBackend`.
+ *
+ * The portable half lives in `cloud-backend-conformance-suite.ts` and is run
+ * below — a real backend imports the same suite rather than copying this file.
+ * What stays here is mock-SPECIFIC: the call recorder, the injectable failure
+ * hook, and the exact URL/argv shapes the mock fabricates, none of which any
+ * other backend can be expected to reproduce.
  */
 import { describe, expect, it } from 'vitest';
 import { createCloudProvider } from '../src/cloud-provider.js';
 import { makeMockCloudBackend } from '../src/mock-backend.js';
 import type { CloudHandle } from '@agentbox/core';
+import { runCloudBackendConformance } from './cloud-backend-conformance-suite.js';
+
+// The mock records calls and returns canned results — it does not run the
+// commands it is handed, so the exit-code assertion is opted out of.
+runCloudBackendConformance('mock', () => ({ backend: makeMockCloudBackend() }), {
+  execRunsCommands: false,
+});
 
 describe('CloudBackend contract (mock)', () => {
   it('records every method invocation in the order it happens', async () => {

@@ -1,9 +1,9 @@
 /**
  * `MockCloudBackend` — a fully in-memory implementation of `CloudBackend` for
- * tests and as a reference. New cloud backends (Vercel, Fly.io, …) can use
- * the contract suite in `test/contract.ts` to validate that their backend
- * behaves the way `createCloudProvider` expects, and look at this file as a
- * minimal example.
+ * tests and as a reference. New cloud backends can run the conformance suite in
+ * `test/cloud-backend-conformance-suite.ts` (`runCloudBackendConformance(name,
+ * factory)`) to validate that their backend behaves the way
+ * `createCloudProvider` expects, and look at this file as a minimal example.
  *
  * Behavior is intentionally simple — every method records the call (so
  * tests can assert ordering) and resolves with deterministic values. No
@@ -169,17 +169,36 @@ export function makeMockCloudBackend(opts: MockCloudBackendOptions = {}): MockCl
       return { exitCode: 0, stdout: '', stderr: '' };
     },
 
+    // Upload/download carry the REAL bytes rather than a placeholder, so a
+    // round-trip through the mock behaves like a round-trip through a live
+    // backend. (It used to store a one-byte stub and have `downloadFile` write
+    // nothing at all — which resolved successfully while leaving the caller
+    // with no file, the one failure mode a mock most needs to not have.)
     async uploadFile(h: CloudHandle, localPath: string, remotePath: string): Promise<void> {
       await record('uploadFile', [h, localPath, remotePath]);
       const sb = requireSandbox(h.sandboxId);
-      sb.files.set(remotePath, new Uint8Array([0]));
+      const { readFile } = await import('node:fs/promises');
+      // Most callers only care that the call happened and pass a path that
+      // doesn't exist (`/host/stage/x.tar`). Carry real bytes when there ARE
+      // real bytes, and fall back to a marker otherwise, so a genuine
+      // round-trip works without forcing every caller to create fixtures.
+      let bytes: Uint8Array;
+      try {
+        bytes = new Uint8Array(await readFile(localPath));
+      } catch {
+        bytes = new Uint8Array([0]);
+      }
+      sb.files.set(remotePath, bytes);
     },
     async downloadFile(h: CloudHandle, remotePath: string, localPath: string): Promise<void> {
       await record('downloadFile', [h, remotePath, localPath]);
       const sb = requireSandbox(h.sandboxId);
-      if (!sb.files.has(remotePath)) {
+      const bytes = sb.files.get(remotePath);
+      if (!bytes) {
         throw new Error(`mock backend: ${remotePath} not in sandbox ${h.sandboxId}`);
       }
+      const { writeFile } = await import('node:fs/promises');
+      await writeFile(localPath, bytes);
     },
     async listFiles(h: CloudHandle, remoteDir: string): Promise<CloudFileEntry[]> {
       await record('listFiles', [h, remoteDir]);
