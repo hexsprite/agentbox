@@ -705,6 +705,7 @@ export function createCloudProvider(
           timeoutMs,
           exposePorts: exposeServicePorts,
           networkPolicy,
+          vnc: req.vnc?.enabled !== false,
           env: provisionEnv,
           volumes: agentVolumes.mounts,
           onLog: log,

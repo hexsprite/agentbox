@@ -114,6 +114,14 @@ export interface CloudProvisionRequest {
    * firewall's inbound sources; other backends ignore it. Absent ⇒ `locked`.
    */
   inbound?: string;
+  /**
+   * Whether this box wants the VNC / browser stack. Only backends that install
+   * their base per-box read it — on sprites the VNC+Chromium apt/npm work is
+   * ~45s paid on EVERY create rather than once at bake time, so it's installed
+   * only when actually asked for. Backends that bake a base image ignore this:
+   * their VNC stack is already in the image either way.
+   */
+  vnc?: boolean;
   /** Env vars baked into the sandbox at provision time. */
   env?: Record<string, string>;
   /** Persistent volumes to attach. Backends without a volume API ignore this. */
