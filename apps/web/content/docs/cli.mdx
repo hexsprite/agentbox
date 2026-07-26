@@ -455,6 +455,7 @@ agentbox hub deploy hetzner           # deploy a full hub to a new VPS, reusing 
 agentbox hub deploy hetzner --package nightly   # a different npm spec (version or dist-tag)
 agentbox hub deploy hetzner --ref my-branch     # build from source on the VPS instead
 agentbox hub deploy hetzner --repo me/fork      # clone a fork (implies building from source)
+agentbox hub deploy hetzner --domain hub.example.com   # your own hostname instead of <ip>.sslip.io
 
 # Authorize the current project's repo on the hub's GitHub App (--git-auth app only)
 agentbox hub add

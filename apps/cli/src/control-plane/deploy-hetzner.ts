@@ -20,6 +20,14 @@ export interface HetznerDeployOptions {
   envPath: string;
   /** Where the VPS gets the hub from — the npm package, or a cloned ref. */
   source: HubDeploySource;
+  /**
+   * Serve on a hostname you control instead of the default `<ip>.sslip.io`. Point
+   * its DNS at the VPS first — Caddy proves ownership over HTTP-01, so a name
+   * that doesn't resolve to this machine never gets a certificate. Also the way
+   * out of a Let's Encrypt rate limit: sslip.io derives its name from the IP, so
+   * a recycled address can arrive already at the per-hostname cap.
+   */
+  domain?: string;
   log: (line: string) => void;
   /**
    * Fired once the VPS exists, before the build + healthz poll. Lets the caller
@@ -59,6 +67,7 @@ export async function runHetznerDeploy(opts: HetznerDeployOptions): Promise<{ ur
   const result = await deployControlPlaneToHetzner({
     envContent,
     source: opts.source,
+    ...(opts.domain ? { domain: opts.domain } : {}),
     onLog: opts.log,
     onProvisioned: async (info) => {
       const record: ControlPlaneDeployRecord = {

@@ -1328,6 +1328,7 @@ interface DeployOpts {
   ref?: string;
   repo?: string;
   package?: string;
+  domain?: string;
 }
 
 /**
@@ -1361,6 +1362,7 @@ const deployHetznerSub = new Command('hetzner')
   .option('--ref <ref>', `build from source at this branch / tag / sha instead of installing the published package (${DEFAULT_DEPLOY_REF} matches this CLI)`)
   .option('--repo <url>', `git repo the VPS clones when building from source (default ${DEFAULT_DEPLOY_REPO})`)
   .option('--package <spec>', `npm spec of @madarco/agentbox to install (default ${AGENTBOX_VERSION}, this CLI's own version)`)
+  .option('--domain <host>', 'serve on a hostname you control (point its DNS at the VPS first) instead of the default <ip>.sslip.io')
   .action(async (opts: DeployOpts) => {
     // Tee the spinner's progress to ~/.agentbox/logs/hub-deploy.log — a deploy
     // that dies at `compose up` or on a 502 otherwise leaves nothing to read.
@@ -1399,6 +1401,7 @@ const deployHetznerSub = new Command('hetzner')
           await runHetznerDeploy({
             envPath: ENV_PATH,
             source,
+            ...(opts.domain ? { domain: opts.domain } : {}),
             log: (line) => {
               ds.message(line);
               cmdLog.write(line);
