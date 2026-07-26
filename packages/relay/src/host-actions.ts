@@ -169,6 +169,10 @@ export async function resolveCloudBackend(name: string): Promise<CloudBackend> {
     const pkg = '@agentbox/sandbox-' + 'remote-docker';
     return loadCloudBackend(pkg, async () => ((await import(pkg)) as { remoteDockerBackend: CloudBackend }).remoteDockerBackend);
   }
+  if (name === 'sprites') {
+    const pkg = '@agentbox/sandbox-' + 'sprites';
+    return loadCloudBackend(pkg, async () => ((await import(pkg)) as { spritesBackend: CloudBackend }).spritesBackend);
+  }
   // External provider plugins: not bundle-inlined, so resolve from the same
   // `~/.agentbox/plugins.json` registry the CLI writes and `import()` the
   // recorded entry with a TRUE variable specifier. The relay runs on the host

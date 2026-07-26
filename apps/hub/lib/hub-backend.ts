@@ -104,6 +104,7 @@ const IMPORTERS: Record<ProviderKind, () => Promise<{ providerModule: ProviderMo
   vercel: () => import('@agentbox/sandbox-vercel'),
   e2b: () => import('@agentbox/sandbox-e2b'),
   digitalocean: () => import('@agentbox/sandbox-digitalocean'),
+  sprites: () => import('@agentbox/sandbox-sprites'),
   'remote-docker': () => import('@agentbox/sandbox-remote-docker'),
 };
 
@@ -395,6 +396,8 @@ const PROVIDER_CRED_KEYS: Record<ProviderKind, readonly string[]> = {
   hetzner: ['HCLOUD_TOKEN'],
   vercel: ['VERCEL_TOKEN', 'VERCEL_OIDC_TOKEN', 'VERCEL_AUTH_SOURCE'],
   digitalocean: ['DIGITALOCEAN_TOKEN'],
+  // Both halves are required: a token with no org can't address anything.
+  sprites: ['SPRITES_TOKEN', 'SPRITES_ORG'],
   // remote-docker authenticates as you, over your own ~/.ssh/config — there is
   // no credential to store, so there is none to check.
   'remote-docker': [],

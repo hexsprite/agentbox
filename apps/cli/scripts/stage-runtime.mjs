@@ -28,6 +28,7 @@ const digitaloceanCtx = join(runtime, 'digitalocean');
 const daytonaCtx = join(runtime, 'daytona');
 const vercelCtx = join(runtime, 'vercel');
 const e2bCtx = join(runtime, 'e2b');
+const spritesCtx = join(runtime, 'sprites');
 
 // Copies that land directly under runtime/ (not part of the docker context).
 const direct = [
@@ -130,6 +131,30 @@ const hetznerFiles = [
 ];
 for (const [srcRel, destRel, exec] of hetznerFiles) {
   copy(srcRel, join(hetznerCtx, destRel), exec);
+}
+
+// Sprites provider — same flat shape as hetzner, mirroring the basenames
+// `packages/sandbox-sprites/src/runtime-assets.ts` resolves. Note these are
+// uploaded on EVERY create rather than baked once (Sprites has no reusable
+// base image), so the staged copies are what every box actually installs.
+const spritesFiles = [
+  ['packages/sandbox-sprites/scripts/install-sprite-base.sh', 'scripts/install-sprite-base.sh', true],
+  ['packages/ctl/dist/bin.cjs', 'ctl.cjs', true],
+  ['packages/sandbox-docker/scripts/agentbox-vnc-start', 'agentbox-vnc-start', true],
+  ['packages/sandbox-docker/scripts/agentbox-dockerd-start', 'agentbox-dockerd-start', true],
+  ['packages/sandbox-docker/scripts/agentbox-checkpoint-cleanup', 'agentbox-checkpoint-cleanup', true],
+  ['packages/sandbox-docker/scripts/agentbox-open', 'agentbox-open', true],
+  ['packages/sandbox-docker/scripts/gh-shim', 'gh-shim', true],
+  ['packages/sandbox-docker/scripts/git-shim', 'git-shim', true],
+  ['packages/sandbox-docker/scripts/ntn-shim', 'ntn-shim', true],
+  ['packages/sandbox-docker/scripts/linear-shim', 'linear-shim', true],
+  ['packages/sandbox-sprites/scripts/custom-system-CLAUDE.md', 'custom-system-CLAUDE.md', false],
+  ['packages/sandbox-docker/scripts/claude-managed-settings.json', 'claude-managed-settings.json', false],
+  ['packages/sandbox-docker/scripts/agentbox-codex-hooks.json', 'agentbox-codex-hooks.json', false],
+  ['apps/cli/share/agentbox-setup/SKILL.md', 'agentbox-setup-skill.md', false],
+];
+for (const [srcRel, destRel, exec] of spritesFiles) {
+  copy(srcRel, join(spritesCtx, destRel), exec);
 }
 
 // _shared — provider-NEUTRAL box-side runtime assets exposed to external

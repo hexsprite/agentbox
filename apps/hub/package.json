@@ -30,6 +30,7 @@
     "@agentbox/sandbox-remote-docker": "workspace:*",
     "@agentbox/sandbox-docker": "workspace:*",
     "@agentbox/sandbox-e2b": "workspace:*",
+    "@agentbox/sandbox-sprites": "workspace:*",
     "@agentbox/sandbox-hetzner": "workspace:*",
     "@agentbox/sandbox-vercel": "workspace:*",
     "@radix-ui/react-tooltip": "^1.2.12",

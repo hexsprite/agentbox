@@ -27,6 +27,13 @@ vi.mock('../src/backend.js', () => ({
   },
 }));
 
+// Static, not dynamic: `vi.mock` is hoisted above imports, so these still see
+// the mocks — and loading @agentbox/sandbox-cloud (which pulls in sandbox-docker)
+// costs seconds on a loaded machine. Inside a test body that blows the 5s
+// timeout; at collect time it's paid once.
+const { buildSpritesAttach } = await import('../src/build-attach.js');
+const { renderInnerCommand } = await import('@agentbox/sandbox-cloud');
+
 const box = {
   id: 'b1',
   name: 'smoke',
@@ -44,7 +51,6 @@ afterEach(() => {
 
 describe('buildSpritesAttach', () => {
   it('opens an interactive shell with `sprite console` and no trailing command', async () => {
-    const { buildSpritesAttach } = await import('../src/build-attach.js');
     const spec = await buildSpritesAttach(box, 'shell');
     expect(spec.argv).toEqual([
       '/usr/local/bin/sprite',
@@ -59,7 +65,6 @@ describe('buildSpritesAttach', () => {
   // `sprite console` logs in as the platform's `sprite` account, not the
   // `vscode` user everything AgentBox installs lives under.
   it('drops into the vscode user via the typed line, not the argv', async () => {
-    const { buildSpritesAttach } = await import('../src/build-attach.js');
     const spec = await buildSpritesAttach(box, 'shell');
     expect(spec.initialInput).toMatch(/^exec sudo -n -H -u vscode bash \/tmp\/agentbox-attach-/);
     expect(spec.initialInput?.endsWith('\n')).toBe(true);
@@ -70,7 +75,6 @@ describe('buildSpritesAttach', () => {
   // terminal line editor mangles that onto a `>` continuation, so it is staged
   // as a file first and one short line is typed.
   it('stages the inner command as a script before connecting', async () => {
-    const { buildSpritesAttach } = await import('../src/build-attach.js');
     const spec = await buildSpritesAttach(box, 'agent', { sessionName: 'agent' });
     expect(execCalls).toHaveLength(1);
     expect(execCalls[0]!.sandboxId).toBe('agentbox-smoke');
@@ -81,8 +85,6 @@ describe('buildSpritesAttach', () => {
   });
 
   it('round-trips the inner command through the staged base64 payload', async () => {
-    const { renderInnerCommand } = await import('@agentbox/sandbox-cloud');
-    const { buildSpritesAttach } = await import('../src/build-attach.js');
     await buildSpritesAttach(box, 'shell', { sessionName: 'shell' });
     const b64 = /printf %s '([^']+)'/.exec(execCalls[0]!.cmd)?.[1] ?? '';
     expect(Buffer.from(b64, 'base64').toString('utf8')).toBe(
@@ -93,8 +95,6 @@ describe('buildSpritesAttach', () => {
   // A detached build only creates the tmux session and must exit; `logs` is a
   // pipe. Both are plain execs that carry their command as an argument.
   it('uses `sprite exec` with the command inline when detached', async () => {
-    const { renderInnerCommand } = await import('@agentbox/sandbox-cloud');
-    const { buildSpritesAttach } = await import('../src/build-attach.js');
     const spec = await buildSpritesAttach(box, 'agent', { detached: true, sessionName: 'agent' });
     expect(spec.argv.slice(0, 7)).toEqual([
       '/usr/local/bin/sprite',
@@ -113,7 +113,6 @@ describe('buildSpritesAttach', () => {
   });
 
   it('uses the exec form for logs', async () => {
-    const { buildSpritesAttach } = await import('../src/build-attach.js');
     const spec = await buildSpritesAttach(box, 'logs', { service: 'web' });
     expect(spec.argv[1]).toBe('exec');
     expect(spec.argv.at(-1)).toContain('agentbox-ctl logs');
@@ -121,7 +120,6 @@ describe('buildSpritesAttach', () => {
   });
 
   it('forwards the host TERM in every mode', async () => {
-    const { buildSpritesAttach } = await import('../src/build-attach.js');
     expect((await buildSpritesAttach(box, 'shell')).env?.AGENTBOX_HOST_TERM).toBeTruthy();
     expect(
       (await buildSpritesAttach(box, 'agent', { detached: true })).env?.AGENTBOX_HOST_TERM,
@@ -129,7 +127,6 @@ describe('buildSpritesAttach', () => {
   });
 
   it('fails clearly on a record with no sandboxId', async () => {
-    const { buildSpritesAttach } = await import('../src/build-attach.js');
     await expect(
       buildSpritesAttach({ id: 'b', name: 'broken', provider: 'sprites' } as BoxRecord, 'shell'),
     ).rejects.toThrow(/has no sandboxId/);

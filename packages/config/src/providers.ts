@@ -109,6 +109,22 @@ export const PROVIDERS = [
       'Per-provider override of `box.image` for digitalocean (numeric snapshot id). Written by `agentbox prepare --provider digitalocean`.',
   },
   {
+    name: 'sprites',
+    kind: 'cloud',
+    label: 'Fly.io Sprites (cloud sandbox)',
+    loginHint: 'paste an org token from `sprite org auth` (or sprites.dev)',
+    // Not a bake: Sprites has no reusable base image, so the runtime installs
+    // inside each box at create time. Cheap because Fly's base already ships
+    // Node 24, git, tmux, gh, claude and codex — measured ~2 min on a live
+    // sprite. Collapses to seconds once Fly ships fork-from-sprite.
+    rebuildMinutes: '~2 per box',
+    blurb: 'Fly.io Sprites microVMs (scale-to-zero; base installs per box until Fly ships fork)',
+    sizeDesc:
+      'Per-provider override of `box.size` for sprites. `cpu-memory[-disk]` GB spec (e.g. `4-8-40`), applied per create.',
+    imageDesc:
+      'Per-provider override of `box.image` for sprites. Normally left empty — Sprites has no image primitive, so nothing is pinned here.',
+  },
+  {
     name: 'remote-docker',
     kind: 'cloud',
     label: 'Remote Docker (your own machine over SSH)',

@@ -50,6 +50,9 @@ importers:
       '@daytona/sdk':
         specifier: ^0.196.0
         version: 0.196.0(ws@8.21.0)
+      '@fly/sprites':
+        specifier: ^0.1.0
+        version: 0.1.0
       '@vercel/sandbox':
         specifier: ^2.0.1
         version: 2.0.1
@@ -139,6 +142,9 @@ importers:
       '@agentbox/sandbox-remote-docker':
         specifier: workspace:*
         version: link:../../packages/sandbox-remote-docker
+      '@agentbox/sandbox-sprites':
+        specifier: workspace:*
+        version: link:../../packages/sandbox-sprites
       '@agentbox/sandbox-vercel':
         specifier: workspace:*
         version: link:../../packages/sandbox-vercel
@@ -193,6 +199,9 @@ importers:
       '@agentbox/sandbox-remote-docker':
         specifier: workspace:*
         version: link:../../packages/sandbox-remote-docker
+      '@agentbox/sandbox-sprites':
+        specifier: workspace:*
+        version: link:../../packages/sandbox-sprites
       '@agentbox/sandbox-vercel':
         specifier: workspace:*
         version: link:../../packages/sandbox-vercel

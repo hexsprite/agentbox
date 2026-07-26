@@ -73,6 +73,7 @@ export interface UserConfig {
     defaultCheckpointVercel?: string;
     defaultCheckpointE2b?: string;
     defaultCheckpointDigitalocean?: string;
+    defaultCheckpointSprites?: string;
     defaultCheckpointRemoteDocker?: string;
     /**
      * Generic VM-size fallback for cloud providers. Provider-interpreted:
@@ -89,6 +90,7 @@ export interface UserConfig {
     sizeVercel?: string;
     sizeE2b?: string;
     sizeDigitalocean?: string;
+    sizeSprites?: string;
     sizeRemoteDocker?: string;
     withPlaywright?: boolean;
     /**
@@ -117,6 +119,7 @@ export interface UserConfig {
     imageVercel?: string;
     imageE2b?: string;
     imageDigitalocean?: string;
+    imageSprites?: string;
     imageRemoteDocker?: string;
     imageRegistry?: string;
     dockerCacheShared?: boolean;
@@ -258,6 +261,7 @@ export interface EffectiveConfig {
     defaultCheckpointVercel: string;
     defaultCheckpointE2b: string;
     defaultCheckpointDigitalocean: string;
+    defaultCheckpointSprites: string;
     defaultCheckpointRemoteDocker: string;
     size: string;
     sizeDocker: string;
@@ -266,6 +270,7 @@ export interface EffectiveConfig {
     sizeVercel: string;
     sizeE2b: string;
     sizeDigitalocean: string;
+    sizeSprites: string;
     sizeRemoteDocker: string;
     withPlaywright: boolean;
     claudeInstall: ClaudeInstallMethod;
@@ -284,6 +289,7 @@ export interface EffectiveConfig {
     imageVercel: string;
     imageE2b: string;
     imageDigitalocean: string;
+    imageSprites: string;
     imageRemoteDocker: string;
     imageRegistry: string;
     dockerCacheShared: boolean;
@@ -436,6 +442,7 @@ export const BUILT_IN_DEFAULTS: EffectiveConfig = {
     defaultCheckpointVercel: '',
     defaultCheckpointE2b: '',
     defaultCheckpointDigitalocean: '',
+    defaultCheckpointSprites: '',
     defaultCheckpointRemoteDocker: '',
     size: '',
     sizeDocker: '',
@@ -444,6 +451,7 @@ export const BUILT_IN_DEFAULTS: EffectiveConfig = {
     sizeVercel: '',
     sizeE2b: '',
     sizeDigitalocean: '',
+    sizeSprites: '',
     sizeRemoteDocker: '',
     withPlaywright: false,
     claudeInstall: 'native',
@@ -462,6 +470,7 @@ export const BUILT_IN_DEFAULTS: EffectiveConfig = {
     imageVercel: '',
     imageE2b: '',
     imageDigitalocean: '',
+    imageSprites: '',
     // Empty = the provider derives the fingerprint-tagged ref itself and ensures
     // it on the remote engine; set only to pin a hand-built image there.
     imageRemoteDocker: '',
