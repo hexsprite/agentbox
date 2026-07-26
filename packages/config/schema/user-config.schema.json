@@ -11,7 +11,15 @@
       "additionalProperties": false,
       "properties": {
         "provider": {
-          "enum": ["docker", "daytona", "hetzner", "vercel", "e2b", "digitalocean"],
+          "enum": [
+            "docker",
+            "daytona",
+            "hetzner",
+            "vercel",
+            "e2b",
+            "digitalocean",
+            "remote-docker"
+          ],
           "description": "Sandbox backend new boxes are created on. Overridden per-run by --provider."
         },
         "hostSnapshot": { "type": "boolean" },
@@ -49,6 +57,9 @@
         "imageE2b": { "type": "string", "minLength": 1 },
         "imageDigitalocean": { "type": "string", "minLength": 1 },
         "imageRemoteDocker": { "type": "string", "minLength": 1 },
+        "imageRegistry": { "type": "string" },
+        "e2bTimeoutMs": { "type": "integer" },
+        "credentialSync": { "type": "boolean" },
         "dockerCacheShared": { "type": "boolean" },
         "memory": { "type": "integer", "minimum": 0 },
         "cpus": { "type": "integer", "minimum": 0 },
@@ -80,14 +91,16 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "sessionName": { "type": "string", "minLength": 1 }
+        "sessionName": { "type": "string", "minLength": 1 },
+        "dangerouslySkipPermissions": { "type": "boolean" }
       }
     },
     "codex": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "sessionName": { "type": "string", "minLength": 1 }
+        "sessionName": { "type": "string", "minLength": 1 },
+        "dangerouslySkipPermissions": { "type": "boolean" }
       }
     },
     "opencode": {
@@ -102,7 +115,8 @@
       "additionalProperties": false,
       "properties": {
         "openIn": { "enum": ["split", "window", "tab", "same"] },
-        "cmuxStatus": { "type": "boolean" }
+        "cmuxStatus": { "type": "boolean" },
+        "herdrStatus": { "type": "boolean" }
       }
     },
     "code": {
@@ -142,7 +156,51 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "port": { "type": "integer" }
+        "port": { "type": "integer" },
+        "controlPlaneUrl": { "type": "string" },
+        "custodyMaxBodyBytes": { "type": "integer" }
+      }
+    },
+    "ssh": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "autoConfig": { "type": "boolean" }
+      }
+    },
+    "git": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "pushMode": { "enum": ["auto", "relay", "lease", "direct"] }
+      }
+    },
+    "cloud": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "useCurrentBranch": { "type": "boolean" },
+        "viaHub": { "type": "boolean" }
+      }
+    },
+    "integrations": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "notion": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" }
+          }
+        },
+        "linear": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" }
+          }
+        }
       }
     },
     "vnc": {
@@ -192,7 +250,8 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "check": { "type": "boolean" }
+        "check": { "type": "boolean" },
+        "channel": { "enum": ["auto", "stable", "nightly"] }
       }
     }
   }
