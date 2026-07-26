@@ -344,7 +344,7 @@ prepare time with the `4-8-20` example.
 
 ### 2.1 Workspace seeding
 
-`seedCloudWorkspace` (`packages/sandbox-cloud/src/workspace-seed.ts`) ships
+`seedCloudWorkspace` (`packages/sandbox-cloud/src/sync/workspace-seed.ts`) ships
 the host workspace into the sandbox:
 
 1. `git clone --no-checkout [--depth=N] file://<hostRepo>` on the host for
@@ -846,6 +846,133 @@ brief:
   from the SDK (handled by the cloud scaffold). E2B itself runs in multiple
   regions; the SDK chooses one transparently.
 
+## 3f. The Sprites shape
+
+`sprites` runs a box as a **Fly.io Sprite** — a Firecracker microVM that sleeps
+when idle and wakes on the next request, with its processes intact. It rides the
+same `createCloudProvider` scaffold as every other cloud, but two platform facts
+force it to diverge more than any of them.
+
+Every claim below was verified against live sprites on 2026-07-26; the raw
+measurements are in [`sprites-backlog.md`](./sprites-backlog.md).
+
+### 3f.1 There is no reusable base image
+
+`CreateSprite` accepts `name`, `config`, `environment`, `labels`, `urlSettings`,
+`waitForCapacity`, `runtime` — no image, no rootfs, no
+create-from-checkpoint. And Sprites' own checkpoints
+(`createCheckpoint` / `restoreCheckpoint`) restore **in place**, into the sprite
+that made them; they are an undo button for one machine, not an artifact a new
+sprite can boot from.
+
+Consequences, all deliberate:
+
+- `provider.prepare` **validates rather than bakes**: credentials resolve, the
+  `sprite` CLI exists *and can list sprites with AgentBox's configured token*,
+  the runtime assets resolve, and their fingerprint is written to
+  `~/.agentbox/sprites-prepared.json`. That keeps the doctor "base freshness"
+  machinery meaningful and gives the deferred warm pool its key. It deliberately
+  does not spin up a throwaway sprite to test-drive the install — billable, slow,
+  and proves nothing a real create doesn't.
+- `backend.provision` runs `install-sprite-base.sh` inline over `exec`, streaming
+  its `>>> BEGIN` / `<<< END` step markers into `~/.agentbox/logs/create.log`.
+  This costs **~2 minutes per box**, not the 7-10 a from-scratch Ubuntu bake
+  costs on hetzner/digitalocean, because Fly's base is already an agent image:
+  Ubuntu 26.04 with Node 24, bun, deno, go, git, tmux, rsync, jq, `gh`, and
+  **claude + codex pre-installed** under the platform's own `sprite` user. The
+  installer symlinks those rather than copying ~440MB or re-downloading claude
+  from a CDN that intermittently 403s datacenter egress.
+- The backend omits `createSnapshot` / `deleteSnapshot` / `snapshotExists`
+  entirely, so the scaffold's `checkpoint.create` raises its own clear "doesn't
+  support snapshots" error. `provision` also throws rather than silently ignoring
+  a `snapshot` argument. Implementing them against sprite-scoped checkpoints
+  would produce checkpoints that silently fail to seed a new box.
+
+Fly has fork-from-sprite working internally with no public endpoint yet. When it
+ships, `provision` collapses to one call and this whole subsection becomes
+historical.
+
+### 3f.2 There is no pause API — and that is a billing hazard
+
+Sprites bill CPU+RAM while awake and sleep on idle, but the SDK has no
+stop/pause/sleep call. Meanwhile the host relay's `CloudBoxPoller` long-polls
+every cloud box's bridge continuously — which is traffic, which keeps the sprite
+awake forever. This is the same trap `CloudBackend.timeoutModel` documents from
+the Daytona measurement.
+
+The fix has two halves:
+
+- **Provider side.** `backend.pause()` closes every `sprite proxy` tunnel for the
+  box. Since the tunnel is the only thing talking to an idle sprite, dropping it
+  IS the pause; the sprite then goes `cold` on its own and its processes and
+  filesystem survive. `timeoutModel: 'inactivity'` makes the relay keepalive loop
+  drive this after a full idle window.
+- **Relay side.** Pausing a box now tears down its poller
+  (`RelayServerHandle.stopCloudPoller`, `POST /admin/pause-box`), which it did
+  not before — the poller was only stopped on destroy. The keepalive scan also no
+  longer gates on `renewTimeout`, which had been silently excluding
+  no-session-deadline backends from the idle-pause half as well as the renewal
+  half. Both changes benefit daytona too (it was polling stopped sandboxes).
+
+`renewTimeout` is omitted: there is no session deadline to push out.
+
+### 3f.3 One public port, so the bridge needs a tunnel
+
+A sprite's URL is `https://<name>-<org-suffix>.sprites.app` and it reaches
+**in-sprite port 8080 and nothing else** — with listeners on both 8080 and 8788
+it served 8080, and killing that listener made it 502 rather than fall through.
+The hostname suffix is per-org and stable but server-assigned, so unlike e2b the
+URL cannot be constructed locally; the backend reads it once and memoizes it.
+
+So `previewUrl` splits:
+
+| Port | Transport |
+| --- | --- |
+| `webProxyPort` (8080) | the public HTTPS URL, org-authenticated (`urlSettings.auth: 'sprite'`) |
+| anything else (8788 bridge, 6080 noVNC) | a detached `sprite proxy <local>:<remote>` loopback forward |
+
+That is the Hetzner `ssh -L` shape, minus the ControlMaster — `sprite proxy` is
+already one long-lived process per mapping. `refreshPreviewUrl` tears one down
+and re-opens it when the poller reports ECONNREFUSED.
+
+`signedPreviewUrl` returns the same public URL: there is no URL-embedded token,
+but the URL *is* browser-usable for org members through their normal Fly session,
+which is what `agentbox url` actually needs. Making a link shareable outside the
+org means flipping the sprite to `auth: 'public'`, which stays the user's call.
+
+### 3f.4 Other deliberate divergences
+
+- **`exec` defaults to root.** `SpawnOptions` has no `user` field and
+  `sprite exec` lands as the unprivileged `sprite` account, so every command is
+  wrapped in `sudo -n -H [-u <user>] bash -lc`. Defaulting to root matches
+  hetzner/digitalocean/daytona and keeps this backend clear of the `vercel`/`e2b`
+  carve-outs in `carry.ts` and `workspace-resync.ts`. With no explicit `cwd` the
+  wrapper also `cd`s to the target user's `$HOME`, because `sprite exec` would
+  otherwise start in Fly's account home rather than the box user's.
+- **Uploads are chowned.** The SDK's filesystem writes as the platform user and
+  `/tmp` is sticky, so a `vscode` consumer could read an uploaded file but not
+  delete it — which broke agent-credential seeding until `uploadFile` started
+  handing ownership over.
+- **`buildAttach` is overridden.** The shared builder appends an SSH-shaped
+  `-t '<cmd>'`; `sprite console` takes no command argument. Interactive attach
+  connects to a bare shell and types one short line to run a staged script (the
+  daytona trick), then `sudo -u vscode` into it; detached/logs use `sprite exec`
+  with the command inline.
+- **The `sprite` CLI is a host prerequisite**, with its own doctor row. It is
+  driven with `SPRITE_TOKEN`/`SPRITE_ORG`/`SPRITE_URL` from AgentBox's own
+  secrets so the CLI and the SDK always act on the same credentials.
+- **The VNC/Chromium stack is per-create cost** (~45s), so
+  `CloudProvisionRequest.vnc` lets `--no-vnc` skip it. Baked providers ignore the
+  field.
+- Not in `PERSISTENT_SSH_PROVIDERS` / `IDE_PROVIDERS` / `SSH_MOUNT_PROVIDERS`:
+  `sprite console` is not real SSH, so no sshfs mount and no VS Code Remote-SSH.
+
+### 3f.5 Hard platform limits
+
+Concurrency caps (10 running / 10 warm by default, reported inline on every
+`listSprites` response), no SSH, no checkpoints, and a `filesystem.writeFile`
+with no streaming API — the whole file is buffered on the host.
+
 ## 3e. The remote-docker shape
 
 `remote-docker` runs a box as a container on a machine the *user* supplies,
@@ -1130,8 +1257,10 @@ failure flags either a backend bug or an abstraction gap.
 | Vercel SDK shim | `packages/sandbox-vercel/src/backend.ts` |
 | Hetzner SDK shim | `packages/sandbox-hetzner/src/backend.ts` |
 | E2B SDK shim | `packages/sandbox-e2b/src/backend.ts` |
-| Workspace seeding (bundle + carry-over) | `packages/sandbox-cloud/src/workspace-seed.ts` |
-| Agent credential volumes | `packages/sandbox-cloud/src/agent-credentials.ts` |
+| Sprites SDK shim | `packages/sandbox-sprites/src/backend.ts` |
+| Sprites host tunnel (`sprite proxy`) | `packages/sandbox-sprites/src/sprite-proxy.ts` |
+| Workspace seeding (bundle + carry-over) | `packages/sandbox-cloud/src/sync/workspace-seed.ts` |
+| Agent credential volumes | `packages/sandbox-cloud/src/sync/agent-credentials.ts` |
 | Cloud cp / download | `packages/sandbox-cloud/src/cloud-cp.ts` |
 | Per-service preview URLs | `packages/sandbox-cloud/src/expose-ports.ts` |
 | Host action executor | `packages/relay/src/host-actions.ts` |
@@ -1140,10 +1269,12 @@ failure flags either a backend bug or an abstraction gap.
 | Per-provider default checkpoint | `packages/config/src/checkpoint.ts` |
 | Orphan prune | `apps/cli/src/commands/prune.ts` `--provider <daytona\|vercel\|e2b>` |
 | SSH alias management | `apps/cli/src/ssh-config.ts` |
+| Backend conformance suite | `packages/sandbox-cloud/test/cloud-backend-conformance-suite.ts` |
 | Cloud E2E test | `apps/cli/test/cloud-e2e.test.ts` (gated on `DAYTONA_API_KEY`) |
 
 Track outstanding work in
 [`daytona-backlog.md`](./daytona-backlog.md),
 [`hertzner_backlog.md`](./hertzner_backlog.md),
-[`vercel-backlog.md`](./vercel-backlog.md), and
-[`e2b_backlog.md`](./e2b_backlog.md).
+[`vercel-backlog.md`](./vercel-backlog.md),
+[`e2b_backlog.md`](./e2b_backlog.md), and
+[`sprites-backlog.md`](./sprites-backlog.md).

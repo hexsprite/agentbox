@@ -66,6 +66,9 @@ export const DEFAULT_BOX_IMAGE_REF = 'agentbox/box:dev';
 /** Label every AgentBox sprite carries, so `list()` can ignore foreign ones. */
 export const AGENTBOX_LABEL = 'agentbox';
 
+/** Box user AgentBox standardizes on; created by install-sprite-base.sh. */
+const BOX_OWNER = 'vscode:vscode';
+
 /**
  * The single port Sprites' HTTP ingress routes the public URL to. Not
  * configurable, and not discovered — hard-wired by the platform.
@@ -206,7 +209,17 @@ async function getSprite(name: string): Promise<Sprite | null> {
  */
 export function buildExecArgv(cmd: string, opts?: CloudExecOptions): string[] {
   const prelude: string[] = [];
-  if (opts?.cwd) prelude.push(`cd ${shq(opts.cwd)}`);
+  if (opts?.cwd) {
+    prelude.push(`cd ${shq(opts.cwd)}`);
+  } else {
+    // `sprite exec` starts in the PLATFORM user's home (/home/sprite), and
+    // `sudo -H` sets HOME for the target user without changing directory — so
+    // without this, a relative path from `agentbox shell <box> -- <cmd>` would
+    // resolve inside Fly's account rather than the box user's. Every SSH-shaped
+    // provider lands in the login user's home; match that. Tolerant of a
+    // missing/unwritable HOME so it can never fail the command outright.
+    prelude.push('cd "$HOME" 2>/dev/null || true');
+  }
   for (const [k, v] of Object.entries(opts?.env ?? {})) {
     // The value is shell-quoted, but the key is interpolated bare into a
     // `bash -lc` string that runs as root — reject anything that isn't a POSIX
@@ -220,6 +233,25 @@ export function buildExecArgv(cmd: string, opts?: CloudExecOptions): string[] {
   const user = opts?.user ?? 'root';
   if (user === 'root') return ['-n', '-H', 'bash', '-lc', inner];
   return ['-n', '-H', '-u', user, 'bash', '-lc', inner];
+}
+
+/** The SDK's `ExecResult`, whose stdout/stderr are `string | Buffer`. */
+interface SdkExecResult {
+  exitCode: number;
+  stdout: string | Buffer;
+  stderr: string | Buffer;
+}
+
+function isExecResultLike(v: unknown): v is SdkExecResult {
+  return Boolean(v) && typeof v === 'object' && typeof (v as SdkExecResult).exitCode === 'number';
+}
+
+function toExecResult(r: SdkExecResult): CloudExecResult {
+  return {
+    exitCode: r.exitCode,
+    stdout: typeof r.stdout === 'string' ? r.stdout : (r.stdout?.toString('utf8') ?? ''),
+    stderr: typeof r.stderr === 'string' ? r.stderr : (r.stderr?.toString('utf8') ?? ''),
+  };
 }
 
 async function execOnSprite(
@@ -237,20 +269,28 @@ async function execOnSprite(
     },
     async () => {
       const sp = spritesClient().sprite(name);
-      // execFileHTTP is the plain-HTTP path: one request, no WebSocket. It
-      // avoids the SDK's `control.js` / WebSocket-global code entirely (the
-      // only reason its package.json claims engines.node>=24) and needs no
-      // stream teardown. Output is coalesced, which is fine — AgentBox's execs
-      // are control-plane commands, not log firehoses.
-      const r = await sp.execFileHTTP('sudo', buildExecArgv(cmd, opts), {
-        timeout: timeoutMs,
-        maxBuffer: 32 * 1024 * 1024,
-      });
-      return {
-        exitCode: r.exitCode,
-        stdout: typeof r.stdout === 'string' ? r.stdout : r.stdout.toString('utf8'),
-        stderr: typeof r.stderr === 'string' ? r.stderr : r.stderr.toString('utf8'),
-      };
+      try {
+        // execFileHTTP is the plain-HTTP path: one request, no WebSocket. It
+        // avoids the SDK's `control.js` / WebSocket-global code entirely (the
+        // only reason its package.json claims engines.node>=24) and needs no
+        // stream teardown. Output is coalesced, which is fine — AgentBox's execs
+        // are control-plane commands, not log firehoses.
+        const r = await sp.execFileHTTP('sudo', buildExecArgv(cmd, opts), {
+          timeout: timeoutMs,
+          maxBuffer: 32 * 1024 * 1024,
+        });
+        return toExecResult(r);
+      } catch (err) {
+        // The SDK THROWS an ExecError on any non-zero exit, carrying the full
+        // result on `.result`. Every `CloudBackend.exec` caller branches on
+        // `exitCode` instead (that's the contract vercel/daytona/hetzner
+        // implement), so map it back — otherwise a routine `test -x` probe
+        // becomes an unhandled error that aborts create. Same fix e2b needed
+        // for its CommandExitError.
+        const result = (err as { result?: unknown }).result;
+        if (isExecResultLike(result)) return toExecResult(result);
+        throw err;
+      }
     },
   );
 }
@@ -412,6 +452,7 @@ export const spritesBackend: CloudBackend = {
 
   async uploadFile(h: CloudHandle, localPath: string, remotePath: string): Promise<void> {
     await uploadToSprite(h.sandboxId, localPath, remotePath);
+    await chownUploaded(h.sandboxId, [remotePath]);
   },
 
   async downloadFile(h: CloudHandle, remotePath: string, localPath: string): Promise<void> {
@@ -464,6 +505,23 @@ export const spritesBackend: CloudBackend = {
     return { url: `http://127.0.0.1:${String(localPort)}` };
   },
 
+  /**
+   * Sprites has no URL-embedded token, so this is the same URL `previewUrl`
+   * returns — but it IS browser-usable, which is what the caller actually
+   * needs. `urlSettings.auth: 'sprite'` grants access to org members through
+   * their normal Fly browser session, so a click works for the person who
+   * owns the box. Omitting this instead would make `agentbox url` fail with a
+   * "needs a header token browsers can't attach" error that is simply untrue
+   * here.
+   *
+   * What it is NOT is a shareable link for someone outside the org. Making one
+   * means flipping the sprite to `auth: 'public'`, which is a real exposure
+   * decision and stays the user's to make (`sprite url update --auth public`).
+   */
+  async signedPreviewUrl(h: CloudHandle, port: number): Promise<CloudPreviewUrl> {
+    return this.previewUrl(h, port);
+  },
+
   // NOTE: `createSnapshot` / `deleteSnapshot` / `snapshotExists` are
   // deliberately absent. Sprites' checkpoints (`createCheckpoint` /
   // `restoreCheckpoint`) restore only into the sprite that made them — they are
@@ -475,15 +533,34 @@ export const spritesBackend: CloudBackend = {
   //
   // `renewTimeout` is absent too: there is no session deadline to push out.
   //
-  // `signedPreviewUrl` is absent: Sprites has no URL-embedded token — access is
-  // either org-authenticated (browser session / bearer) or fully public, and
-  // flipping a box to public to make a link shareable is not a decision this
-  // layer should make silently.
-  //
   // `ensureVolume`, `setInbound`, `repairReachability` and `startInBoxPortless`
   // are absent: no volume primitive, no per-box firewall to program, and a
   // public URL that needs no in-box mirror.
 };
+
+/**
+ * Hand ownership of freshly-uploaded files to the box user.
+ *
+ * The SDK's filesystem API writes as the PLATFORM user (`sprite`), while every
+ * consumer of an uploaded file runs as `vscode`. `/tmp` is sticky, so a
+ * `vscode` process can read such a file but cannot delete it — which is how
+ * this first showed up: the agent-credential seeding untarred fine and then
+ * died on `rm: cannot remove '/tmp/agentbox-claude-creds.tar.gz': Operation not
+ * permitted`, reporting the whole extract as failed and dropping the box back
+ * to an interactive login.
+ *
+ * Best-effort: a chown failure leaves a readable file, which is still better
+ * than failing the upload.
+ */
+async function chownUploaded(name: string, remotePaths: string[]): Promise<void> {
+  if (remotePaths.length === 0) return;
+  const cmd = `chown ${BOX_OWNER} ${remotePaths.map(shq).join(' ')}`;
+  try {
+    await execOnSprite(name, cmd, { attemptTimeoutMs: 30_000 });
+  } catch {
+    // the file is at least present and readable
+  }
+}
 
 async function uploadToSprite(name: string, localPath: string, remotePath: string): Promise<void> {
   await withSpritesRetry(

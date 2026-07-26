@@ -31,6 +31,11 @@ interface FakeSprite {
 
 const sprites = new Map<string, FakeSprite>();
 
+/** Mirrors the SDK's `ExecError` (name + a `result` payload). */
+class ExecError extends Error {
+  override name = 'ExecError';
+}
+
 class NotFound extends Error {
   statusCode = 404;
   constructor(name: string) {
@@ -61,9 +66,16 @@ function fakeSpriteHandle(name: string) {
       sp.status = 'running';
       expect(file).toBe('sudo');
       const script = args.at(-1) ?? '';
+      execLog.push(script);
       const m = /(?:^|\n)exit (\d+)\s*$/.exec(script);
       const exitCode = m ? Number.parseInt(m[1]!, 10) : 0;
-      return { exitCode, stdout: '', stderr: '' };
+      const result = { exitCode, stdout: '', stderr: '' };
+      // The real SDK THROWS on any non-zero exit, carrying the result on
+      // `.result` — it does not return it. Modelling that faithfully is the
+      // point: assuming otherwise shipped a backend where a routine failing
+      // probe aborted create with an unhandled ExecError.
+      if (exitCode !== 0) throw Object.assign(new ExecError(`Command failed with exit code ${String(exitCode)}`), { result });
+      return result;
     },
     filesystem: () => ({
       writeFile: async (path: string, data: string | Buffer) => {
@@ -145,6 +157,7 @@ vi.mock('../src/install.js', () => ({
 
 // `previewUrl` for a non-ingress port spawns a detached `sprite proxy`. Stub the
 // tunnel module so the suite stays free of child processes.
+const execLog: string[] = [];
 const forwarded = new Map<string, number>();
 vi.mock('../src/sprite-proxy.js', () => ({
   forward: async (name: string, port: number) => {
@@ -183,6 +196,9 @@ runCloudBackendConformance(
     // 8080 is the public URL; 8788 is the relay bridge, which goes through a
     // loopback forward. Both must mint a URL.
     previewPorts: [8080, 8788],
+    // The fake honours a trailing `exit N`, so the "non-zero exit comes back as
+    // a result, not a throw" assertion is live for this backend.
+    execRunsCommands: true,
   },
 );
 
@@ -190,6 +206,7 @@ describe('sprites backend specifics', () => {
   beforeEach(() => {
     sprites.clear();
     forwarded.clear();
+    execLog.length = 0;
   });
 
   it('labels every sprite so list() can ignore foreign ones', async () => {
@@ -257,6 +274,34 @@ describe('sprites backend specifics', () => {
     expect(spritesBackend.renewTimeout).toBeUndefined();
     expect(spritesBackend.timeoutModel).toBe('inactivity');
     expect(typeof spritesBackend.pause).toBe('function');
+  });
+
+  // Regression: the SDK's filesystem writes as the PLATFORM user, /tmp is
+  // sticky, and every consumer runs as vscode — so an uploaded file could be
+  // read but not deleted. Agent-credential seeding untarred fine and then died
+  // on `rm: Operation not permitted`, reporting the whole extract as failed.
+  it('hands uploaded files to the box user so vscode can delete them', async () => {
+    const h = await spritesBackend.provision({ name: 'owned', image: 'x' });
+    const { mkdtempSync, writeFileSync } = await import('node:fs');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const src = join(mkdtempSync(join(tmpdir(), 'agentbox-sprites-own-')), 'creds.tar.gz');
+    writeFileSync(src, 'payload');
+    execLog.length = 0;
+    await spritesBackend.uploadFile(h, src, '/tmp/agentbox-creds.tar.gz');
+    expect(execLog.some((c) => c.includes("chown vscode:vscode '/tmp/agentbox-creds.tar.gz'"))).toBe(
+      true,
+    );
+  });
+
+  // Regression: `agentbox url` used to fail with "requires a header token
+  // browsers can't attach", which is untrue here — the URL is org-authenticated
+  // and opens fine in the owner's browser.
+  it('offers the public URL as the browser-bound URL too', async () => {
+    const h = await spritesBackend.provision({ name: 'browsable', image: 'x' });
+    expect((await spritesBackend.signedPreviewUrl!(h, 8080, 60)).url).toBe(
+      'https://browsable-test.sprites.app',
+    );
   });
 
   it('sizes the sprite from a cpu-memory-disk string', async () => {

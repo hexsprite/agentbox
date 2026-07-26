@@ -9,34 +9,49 @@ import { buildExecArgv } from '../src/backend.js';
 
 describe('buildExecArgv', () => {
   it('defaults to root, matching hetzner/digitalocean/daytona', () => {
-    expect(buildExecArgv('echo hi')).toEqual(['-n', '-H', 'bash', '-lc', 'echo hi']);
-  });
-
-  it('does not add a -u for an explicit root request', () => {
-    expect(buildExecArgv('echo hi', { user: 'root' })).toEqual([
+    expect(buildExecArgv('echo hi')).toEqual([
       '-n',
       '-H',
       'bash',
       '-lc',
-      'echo hi',
+      'cd "$HOME" 2>/dev/null || true\necho hi',
+    ]);
+  });
+
+  it('does not add a -u for an explicit root request', () => {
+    expect(buildExecArgv('echo hi', { user: 'root' }).slice(0, 4)).toEqual([
+      '-n',
+      '-H',
+      'bash',
+      '-lc',
     ]);
   });
 
   it('drops privileges with -u for a named user', () => {
-    expect(buildExecArgv('echo hi', { user: 'vscode' })).toEqual([
+    expect(buildExecArgv('echo hi', { user: 'vscode' }).slice(0, 6)).toEqual([
       '-n',
       '-H',
       '-u',
       'vscode',
       'bash',
       '-lc',
-      'echo hi',
     ]);
   });
 
-  it('prepends a cd for cwd', () => {
+  // Regression: `sprite exec` starts in the PLATFORM user's home
+  // (/home/sprite), and `sudo -H` sets HOME without changing directory. Without
+  // an explicit cd, a relative path from `agentbox shell <box> -- <cmd>`
+  // resolved inside Fly's account instead of the box user's.
+  it('cds to the target user home when no cwd is given', () => {
+    expect(buildExecArgv('pwd', { user: 'vscode' }).at(-1)).toBe(
+      'cd "$HOME" 2>/dev/null || true\npwd',
+    );
+  });
+
+  it('prepends a cd for cwd, overriding the home default', () => {
     const argv = buildExecArgv('ls', { cwd: '/workspace' });
     expect(argv.at(-1)).toBe("cd '/workspace'\nls");
+    expect(argv.at(-1)).not.toContain('$HOME');
   });
 
   it('single-quotes a cwd containing a quote', () => {
@@ -45,13 +60,13 @@ describe('buildExecArgv', () => {
   });
 
   it('exports env vars ahead of the command', () => {
-    const argv = buildExecArgv('run', { env: { FOO: 'bar', BAZ: 'a b' } });
-    expect(argv.at(-1)).toBe("export FOO='bar'\nexport BAZ='a b'\nrun");
+    const argv = buildExecArgv('run', { cwd: '/w', env: { FOO: 'bar', BAZ: 'a b' } });
+    expect(argv.at(-1)).toBe("cd '/w'\nexport FOO='bar'\nexport BAZ='a b'\nrun");
   });
 
   it('quotes an env value that tries to break out', () => {
-    const argv = buildExecArgv('run', { env: { FOO: "'; rm -rf /; '" } });
-    expect(argv.at(-1)).toBe("export FOO=''\\''; rm -rf /; '\\'''\nrun");
+    const argv = buildExecArgv('run', { cwd: '/w', env: { FOO: "'; rm -rf /; '" } });
+    expect(argv.at(-1)).toBe("cd '/w'\nexport FOO=''\\''; rm -rf /; '\\'''\nrun");
   });
 
   // The value is quoted but the KEY is interpolated bare into a string that

@@ -1,0 +1,140 @@
+---
+title: Fly.io Sprites
+description: Run your agents in a Fly.io Sprite — a scale-to-zero Firecracker microVM that sleeps when idle and wakes on demand
+---
+
+Run your agents in a [Fly.io Sprite](https://sprites.dev): a Firecracker microVM that **sleeps when idle and wakes on the next request**, with your processes still running. Each box is a remote sprite you drive with the same `agentbox` commands as a local box, and it supports [Docker-in-Docker](/docs/docker-in-docker).
+
+Switch per box with `--provider sprites`, or pin it project-wide with `box.provider: sprites` in [`agentbox.yaml`](/docs/agentbox-yaml). Comparing options? See [local-docker](/docs/local-docker), [hetzner](/docs/hetzner), [e2b](/docs/e2b), and [vercel](/docs/vercel).
+
+<Callout title="Nightly">
+Sprites support is available in the **nightly** build of AgentBox.
+</Callout>
+
+## What's different about this provider
+
+Two things set Sprites apart from every other AgentBox cloud, and both are worth knowing before you pick it.
+
+### There is no base image — the runtime installs per box
+
+Daytona, Hetzner, DigitalOcean, Vercel and E2B all bake a base once, at `agentbox prepare`, and every box boots from it in seconds. Sprites has no create-from-image and no fork-from-template yet, so **the AgentBox runtime installs inside each box at create time**, adding roughly **two minutes** to every `create`.
+
+That is survivable only because Fly's base is already an agent image. It ships Ubuntu 26.04 with Node 24, bun, deno, go, java, ruby, git, tmux, `gh`, and **Claude Code and Codex already installed** — so the per-box install is filling gaps (Docker, the `vscode` user, `agentbox-ctl`, the shims), not building a machine from scratch.
+
+Fly has fork-from-sprite working internally and has said it's coming. When it ships, create drops to seconds and this caveat goes away.
+
+### It sleeps by itself, and that's how you stop paying
+
+Sprites bill for CPU and RAM while a sprite is awake, and a sprite goes to sleep on its own once nothing is talking to it. There is no "stop" API to call.
+
+AgentBox handles this for you: when a box's agent has been idle for a full [autopause](/docs/checkpoints-and-pausing) window, the host stops polling it and drops its tunnel, and the sprite falls asleep. `agentbox pause` / `agentbox stop` do the same thing immediately. Your processes — the supervisor, your services, tmux sessions — survive the sleep and are still there when the box wakes, which any command does automatically.
+
+`agentbox list` shows a sleeping box as `paused`.
+
+## Set up
+
+You need two things: the `sprite` CLI on your machine, and an org token.
+
+```bash
+curl -fsSL https://sprites.dev/install.sh | sh   # installs to ~/.local/bin
+```
+
+The CLI is a genuine prerequisite, not a convenience: AgentBox shells out to `sprite console` for interactive attach and to `sprite proxy` for the host↔box relay tunnel. `agentbox doctor --provider sprites` checks for it.
+
+Then the interactive wizard:
+
+```bash
+agentbox install        # then select sprites
+```
+
+Paste an org token when prompted — mint one with `sprite org auth`, or from [sprites.dev](https://sprites.dev). AgentBox also reads your `sprite` CLI config to offer your current org as the default. Credentials persist to `~/.agentbox/secrets.env` as `SPRITES_TOKEN` and `SPRITES_ORG`; project `.env` files are never harvested.
+
+For CI or scripted setup:
+
+```bash
+agentbox sprites login                 # credentials only
+agentbox prepare --provider sprites    # validate + fingerprint
+```
+
+See [environment](/docs/environment) for where `~/.agentbox/secrets.env` lives.
+
+## `prepare` validates — it doesn't bake
+
+<Callout title="NOTHING IS BUILT">
+`agentbox prepare --provider sprites` is a preflight, not a bake. There is no image to build.
+</Callout>
+
+It checks that your credentials work, that the `sprite` CLI is installed **and can list sprites with the token AgentBox is configured with** (a mismatch against whatever `sprite use` points at otherwise shows up much later as a confusing "sprite not found" during attach), and that the box runtime files all resolve. It then records their fingerprint in `~/.agentbox/sprites-prepared.json`.
+
+That fingerprint is what `agentbox doctor` compares against your current install, so you still get told when a CLI upgrade has changed what your boxes would get — the same "base freshness" signal the baked providers give you.
+
+## Use it
+
+```bash
+agentbox sprites claude
+```
+
+`agentbox sprites create|claude|codex|opencode` is sugar for the same command with `--provider sprites`.
+
+## Create a box
+
+The flow is standard. The workspace is seeded from a host git bundle plus your stash and untracked files (see [teleport-a-project](/docs/teleport-a-project)). The box runs as user `vscode`, and `/workspace` is checked out on branch `agentbox/<box-name>`.
+
+```bash
+agentbox create --provider sprites -n my-box
+```
+
+Expect the first log lines within a second or two (sprites create almost instantly), then a couple of minutes of base-install output. Each install step prints a `>>> BEGIN` / `<<< END` marker to `~/.agentbox/logs/create.log`, so if something stalls you can see exactly which step it stalled on.
+
+### Sizing
+
+Unlike E2B, size is a **per-create** knob. Pass `cpu-memory[-disk]` in GB:
+
+```bash
+agentbox create --provider sprites --size 4-8-40
+```
+
+Pin a default with `box.sizeSprites` or `box.size`. Unset gives 2 vCPU / 4 GB / 20 GB.
+
+### Skipping the browser stack
+
+The VNC and Chromium install is about 45 seconds of the two minutes. On a provider that bakes once that's free; here you pay it per box. If you don't need [browser and screen](/docs/browser-and-screen) support:
+
+```bash
+agentbox create --provider sprites --no-vnc
+```
+
+## Web apps and preview URLs
+
+Every sprite gets one public HTTPS URL: `https://<box-name>-<org>.sprites.app`. It routes to the in-box web proxy, so whatever service you mark `expose:` in [`agentbox.yaml`](/docs/agentbox-yaml) is what it serves.
+
+```bash
+agentbox url my-box
+```
+
+The URL is **org-authenticated** by default — reachable in a browser you're signed into Fly with, or with a bearer token. AgentBox does not flip it to public for you; do that deliberately with `sprite url update --auth public` if you need to share a link.
+
+One caveat worth knowing: Sprites route that URL to exactly one in-box port. AgentBox gives it to your web proxy, and reaches everything else (the relay bridge, noVNC) through a local `sprite proxy` tunnel instead. That's transparent in normal use — it's the reason the `sprite` CLI is required.
+
+## Checkpoints
+
+<Callout title="NOT SUPPORTED ON THIS PROVIDER">
+`agentbox checkpoint` does not work with sprites, and errors clearly if you try.
+</Callout>
+
+Sprites does have a checkpoint feature, but it restores **in place**, into the sprite that made it — it's an undo button for one machine, not a reusable image a new box can boot from. Since that's exactly what an AgentBox checkpoint is for, the provider declines rather than shipping checkpoints that silently fail to seed anything.
+
+Pausing still works, and is free — see above. For checkpoint-backed workflows use [e2b](/docs/e2b), [vercel](/docs/vercel), [hetzner](/docs/hetzner) or [local-docker](/docs/local-docker).
+
+## Attach and terminals
+
+`agentbox claude` / `codex` / `opencode` / `shell` all work normally. Attach goes through `sprite console`, which lands on Fly's platform user and immediately drops into your box's `vscode` session — so tmux, scrollback and resize behave as they do everywhere else. See [access-your-box](/docs/access-your-box).
+
+Sprites boxes are not reachable over plain SSH, so the sshfs mount and VS Code Remote-SSH paths described in [access-your-box](/docs/access-your-box) don't apply here.
+
+## Limits
+
+- **Concurrency.** Your Sprites plan caps how many sprites can be running and warm at once (10 each by default). Hitting the cap fails the create with a clear error rather than queueing forever.
+- **No SSH.** See above.
+- **No checkpoints.** See above.
+- **Create takes ~2 minutes.** See above.

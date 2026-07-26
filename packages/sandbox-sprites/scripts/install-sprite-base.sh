@@ -78,6 +78,30 @@ SPRITE_USER="${AGENTBOX_SPRITE_USER:-sprite}"
 SPRITE_HOME="$(getent passwd "$SPRITE_USER" | cut -d: -f6 || true)"
 [ -n "$SPRITE_HOME" ] || SPRITE_HOME="/home/${SPRITE_USER}"
 
+step "locate the platform toolchain"
+# Fly puts node/npm/bun/go/… in a symlink farm at /.sprite/bin, and puts that
+# directory on the `sprite` user's PATH from its own shell profile — NOT in
+# /etc/environment. So root (this script) and the `vscode` user we're about to
+# create both start with no node and no npm, and every npm step below dies with
+# `npm: command not found`. Prepend it for the rest of this script, and bake it
+# into /etc/profile.d/agentbox.sh further down so login shells get it too.
+SPRITE_BIN="${AGENTBOX_SPRITE_BIN:-/.sprite/bin}"
+if [ -d "$SPRITE_BIN" ]; then
+  export PATH="${SPRITE_BIN}:${PATH}"
+  echo "  toolchain: ${SPRITE_BIN} (node $(node --version 2>/dev/null || echo MISSING), npm $(npm --version 2>/dev/null || echo MISSING))"
+else
+  echo "  toolchain: ${SPRITE_BIN} not present — relying on the inherited PATH"
+fi
+if ! command -v node >/dev/null 2>&1; then
+  echo "install-sprite-base.sh: no node on PATH after adding ${SPRITE_BIN} — cannot continue" >&2
+  exit 72
+fi
+if ! command -v npm >/dev/null 2>&1; then
+  echo "install-sprite-base.sh: no npm on PATH after adding ${SPRITE_BIN} — cannot continue" >&2
+  exit 72
+fi
+done_ "locate the platform toolchain"
+
 step "vscode user (UID 1000) + sudoers"
 # AgentBox standardizes on `vscode` at UID 1000 across every provider — the
 # cloud scaffold hardcodes /home/vscode (credential pivots, the .claude.json
@@ -148,8 +172,17 @@ apt-get install -y --no-install-recommends git-lfs bubblewrap
 done_ "core tooling gaps (git-lfs, bubblewrap)"
 
 step "node setcap (port <1024 bind without root)"
+# Fail loudly on a missing node rather than `readlink -f ""` silently resolving
+# to the cwd and setcap no-oping behind a `|| true` — the toolchain probe above
+# has already guaranteed node is on PATH, so anything wrong here is real.
 NODE_BIN="$(readlink -f "$(command -v node)")"
-setcap cap_net_bind_service=+ep "$NODE_BIN" || true
+if [ -z "$NODE_BIN" ] || [ ! -x "$NODE_BIN" ]; then
+  echo "install-sprite-base.sh: could not resolve the node binary for setcap" >&2
+  exit 72
+fi
+# The capability itself is best-effort: some kernels/filesystems refuse it, and
+# a box without it still works for everything except binding :80 unprivileged.
+setcap cap_net_bind_service=+ep "$NODE_BIN" || echo "  setcap failed on ${NODE_BIN} (continuing)"
 done_ "node setcap (port <1024 bind without root)"
 
 step "git system-wide safe.directory + LFS filter"
@@ -248,8 +281,19 @@ sudo -u vscode -H cp /usr/local/share/agentbox/setup-guide.md \
 done_ "credential pivot symlinks (vscode home)"
 
 step "login-shell shim (/etc/profile.d/agentbox.sh)"
-cat > /etc/profile.d/agentbox.sh <<'PROFILE'
+# `$SPRITE_BIN` is expanded HERE (unquoted heredoc delimiter on the first
+# block) because the location is discovered at install time; everything after
+# is literal.
+cat > /etc/profile.d/agentbox.sh <<PROFILE
 # Auto-loaded by login shells; box.env is written at create time.
+# Fly's toolchain (node, npm, bun, go, …) lives here and is only on the
+# platform user's PATH by default — `vscode` needs it added explicitly.
+case ":\$PATH:" in
+  *:${SPRITE_BIN}:*) : ;;
+  *) PATH=${SPRITE_BIN}:\$PATH ;;
+esac
+PROFILE
+cat >> /etc/profile.d/agentbox.sh <<'PROFILE'
 if [ -r /etc/agentbox/box.env ]; then
   set -a
   . /etc/agentbox/box.env
