@@ -8,22 +8,30 @@ import { describe, expect, it } from 'vitest';
 import { buildExecArgv } from '../src/backend.js';
 
 describe('buildExecArgv', () => {
-  it('defaults to root, matching hetzner/digitalocean/daytona', () => {
+  // Regression: this used to default to ROOT. The shared sync layer is written
+  // against "exec lands as vscode" — it writes into /home/vscode directly and
+  // sudos only for the root bits — so running it all as root left host-uid and
+  // root-owned files behind. `~/.claude` came out `501:staff 0700`, unreadable
+  // by the agent, and Claude Code asked for a theme and a login on every box.
+  it('defaults to vscode, matching every other provider', () => {
     expect(buildExecArgv('echo hi')).toEqual([
       '-n',
       '-H',
+      '-u',
+      'vscode',
       'bash',
       '-lc',
       'cd "$HOME" 2>/dev/null || true\necho hi',
     ]);
   });
 
-  it('does not add a -u for an explicit root request', () => {
-    expect(buildExecArgv('echo hi', { user: 'root' }).slice(0, 4)).toEqual([
+  it('still honours an explicit root request', () => {
+    expect(buildExecArgv('echo hi', { user: 'root' })).toEqual([
       '-n',
       '-H',
       'bash',
       '-lc',
+      'cd "$HOME" 2>/dev/null || true\necho hi',
     ]);
   });
 

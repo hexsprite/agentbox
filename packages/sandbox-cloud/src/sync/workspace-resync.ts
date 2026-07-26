@@ -67,10 +67,12 @@ export async function resyncCloudWorkspace(
   onLog?: (line: string) => void,
 ): Promise<RepoResyncResult[]> {
   const log = onLog ?? (() => {});
-  // Vercel/E2B wrap non-root execs in `sudo -u vscode -H bash -lc`, whose extra
-  // re-parse mangles the untracked probe's `$(...)`/`$var`/`while` (→ hang). The
-  // probe is read-only, so run it as root there (single `bash -lc`, no re-parse).
-  const probeAsRoot = backend.name === 'vercel' || backend.name === 'e2b';
+  // Vercel/E2B/sprites wrap non-root execs in `sudo -u vscode -H bash -lc`,
+  // whose extra re-parse mangles the untracked probe's `$(...)`/`$var`/`while`
+  // (→ hang). The probe is read-only, so run it as root there (single
+  // `bash -lc`, no re-parse).
+  const probeAsRoot =
+    backend.name === 'vercel' || backend.name === 'e2b' || backend.name === 'sprites';
   const stage = await mkdtemp(join(tmpdir(), 'agentbox-resync-'));
   const prefetch = new Map<string, Prefetched>();
   try {

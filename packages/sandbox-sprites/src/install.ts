@@ -44,7 +44,10 @@ export async function installSpriteBase(args: InstallSpriteBaseArgs): Promise<vo
   const chmods = assets
     .map((a) => `chmod ${a.remoteMode.toString(8).padStart(4, '0')} ${shq(a.remotePath)}`)
     .join(' && ');
-  const chmodRes = await args.exec(chmods, { attemptTimeoutMs: 60_000 });
+  // Explicitly root: `backend.exec` defaults to `vscode` (what the shared sync
+  // layer assumes), but THIS script is what creates that user — so until it has
+  // run, `sudo -u vscode` fails with "unknown user vscode".
+  const chmodRes = await args.exec(chmods, { user: 'root', attemptTimeoutMs: 60_000 });
   if (chmodRes.exitCode !== 0) {
     throw new Error(
       `sprites: could not set modes on the uploaded runtime assets: ${
@@ -64,6 +67,9 @@ export async function installSpriteBase(args: InstallSpriteBaseArgs): Promise<vo
   // still-running apt from an abandoned attempt would deadlock on the dpkg
   // lock. One shot, generous timeout, loud failure.
   const res = await args.exec('bash /tmp/agentbox-install-sprite-base.sh', {
+    // Root for the same reason as the chmod above, and because the installer
+    // does root work throughout (useradd, apt, install into /usr/local/bin).
+    user: 'root',
     env,
     attemptTimeoutMs: args.timeoutMs,
     noRetry: true,

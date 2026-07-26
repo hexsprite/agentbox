@@ -33,6 +33,17 @@ export interface ProviderMeta {
   readonly sizeDesc: string;
   /** Description of the per-provider `box.image<P>` KEY_REGISTRY entry. */
   readonly imageDesc: string;
+  /**
+   * What `prepare` actually produces. `'baked'` (the default) = a reusable base
+   * image/snapshot every box boots from. `'per-box'` = the platform has no
+   * image primitive, so `prepare` only validates + fingerprints and the runtime
+   * installs inside each box at create time (sprites).
+   *
+   * User-facing copy branches on this: telling someone their "base image is out
+   * of date" and offering to "rebuild the base" is nonsense for a provider that
+   * has no base image.
+   */
+  readonly baseKind?: 'baked' | 'per-box';
 }
 
 export const PROVIDERS = [
@@ -113,12 +124,13 @@ export const PROVIDERS = [
     kind: 'cloud',
     label: 'Fly.io Sprites (cloud sandbox)',
     loginHint: 'paste an org token from `sprite org auth` (or sprites.dev)',
-    // Not a bake: Sprites has no reusable base image, so the runtime installs
-    // inside each box at create time. Cheap because Fly's base already ships
-    // Node 24, git, tmux, gh, claude and codex — measured 50s (--no-vnc, small
-    // repo) to ~2.5 min (VNC + a large clone) on live sprites. Collapses to
+    baseKind: 'per-box',
+    // Rendered as "~<value> min", so keep it a bare number range. This is the
+    // per-box install cost, not a bake: measured 50s (--no-vnc, small repo) to
+    // ~2.5 min (VNC + a large clone) on live sprites. Cheap because Fly's base
+    // already ships Node 24, git, tmux, gh, claude and codex. Collapses to
     // seconds once Fly ships fork-from-sprite.
-    rebuildMinutes: '1-2.5 per box',
+    rebuildMinutes: '1-2.5',
     blurb: 'Fly.io Sprites microVMs (scale-to-zero; base installs per box until Fly ships fork)',
     sizeDesc:
       'Per-provider override of `box.size` for sprites. `cpu-memory[-disk]` GB spec (e.g. `4-8-40`), applied per create.',

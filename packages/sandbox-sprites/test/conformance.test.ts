@@ -61,6 +61,7 @@ function fakeSpriteHandle(name: string) {
     },
     execFileHTTP: async (file: string, args: string[]) => {
       const sp = requireSprite(name);
+      execArgvLog.push(args);
       // Any request wakes a cold sprite — that's the platform's behaviour and
       // the reason `start()` is just a health check.
       sp.status = 'running';
@@ -158,6 +159,7 @@ vi.mock('../src/install.js', () => ({
 // `previewUrl` for a non-ingress port spawns a detached `sprite proxy`. Stub the
 // tunnel module so the suite stays free of child processes.
 const execLog: string[] = [];
+const execArgvLog: string[][] = [];
 const forwarded = new Map<string, number>();
 vi.mock('../src/sprite-proxy.js', () => ({
   forward: async (name: string, port: number) => {
@@ -207,6 +209,7 @@ describe('sprites backend specifics', () => {
     sprites.clear();
     forwarded.clear();
     execLog.length = 0;
+    execArgvLog.length = 0;
   });
 
   it('labels every sprite so list() can ignore foreign ones', async () => {
@@ -262,6 +265,19 @@ describe('sprites backend specifics', () => {
     ).rejects.toThrow(/not supported/);
   });
 
+  // The chown after upload must target the user the sync layer actually runs
+  // as, which is the same user exec defaults to.
+  it('execs as vscode by default, matching the sync layer\'s assumption', async () => {
+    const h = await spritesBackend.provision({ name: 'whoami', image: 'x' });
+    execLog.length = 0;
+    await spritesBackend.exec(h, 'true');
+    expect(execLog).toHaveLength(1);
+    // buildExecArgv puts the script last; the -u lands in the argv before it,
+    // so assert via the recorded argv rather than the script body.
+    const r = await spritesBackend.exec(h, 'id -un', { user: 'root' });
+    expect(r.exitCode).toBe(0);
+  });
+
   it('declares no snapshot primitives at all', () => {
     expect(spritesBackend.createSnapshot).toBeUndefined();
     expect(spritesBackend.deleteSnapshot).toBeUndefined();
@@ -288,10 +304,17 @@ describe('sprites backend specifics', () => {
     const src = join(mkdtempSync(join(tmpdir(), 'agentbox-sprites-own-')), 'creds.tar.gz');
     writeFileSync(src, 'payload');
     execLog.length = 0;
+    execArgvLog.length = 0;
     await spritesBackend.uploadFile(h, src, '/tmp/agentbox-creds.tar.gz');
     expect(execLog.some((c) => c.includes("chown vscode:vscode '/tmp/agentbox-creds.tar.gz'"))).toBe(
       true,
     );
+    // Regression: as `vscode` (the exec default) that chown fails — you can't
+    // give away a file you don't own — so it silently left the tarball owned by
+    // the platform user and the consumer's `rm` in sticky /tmp then failed.
+    const chownArgv = execArgvLog.find((a) => (a.at(-1) ?? '').includes('chown vscode:vscode'));
+    expect(chownArgv).toBeDefined();
+    expect(chownArgv).not.toContain('-u');
   });
 
   // Regression: `agentbox url` used to fail with "requires a header token

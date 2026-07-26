@@ -32,10 +32,15 @@
  *     tmux sessions come back untouched.
  *
  *   - **No `user` on exec.** `SpawnOptions` has cwd/env/tty/detachable/… but no
- *     user, and `sprite exec` runs as the platform's `sprite` account. Every
- *     command is therefore wrapped in `sudo`, defaulting to root — the same
- *     model as hetzner/digitalocean/daytona, which keeps this backend clear of
- *     the `vercel`/`e2b` carve-outs in the cloud scaffold's carry + resync paths.
+ *     user, and `sprite exec` runs as the platform's own `sprite` account.
+ *     Every command is therefore wrapped in `sudo`, defaulting to **`vscode`** —
+ *     what every other provider's exec lands as (hetzner SSHes in as vscode;
+ *     vercel/e2b drop to it from root). The whole sync layer is written against
+ *     that assumption: it writes into /home/vscode directly and `sudo`s only for
+ *     the root bits. Defaulting to root instead silently left host-uid and
+ *     root-owned files in /home/vscode — `~/.claude` came out `501:staff 0700`,
+ *     unreadable by the agent, so Claude Code started up asking for a theme and
+ *     a login on every box.
  */
 
 import { readFile, writeFile } from 'node:fs/promises';
@@ -67,7 +72,8 @@ export const DEFAULT_BOX_IMAGE_REF = 'agentbox/box:dev';
 export const AGENTBOX_LABEL = 'agentbox';
 
 /** Box user AgentBox standardizes on; created by install-sprite-base.sh. */
-const BOX_OWNER = 'vscode:vscode';
+const BOX_USER = 'vscode';
+const BOX_OWNER = `${BOX_USER}:${BOX_USER}`;
 
 /**
  * The single port Sprites' HTTP ingress routes the public URL to. Not
@@ -199,10 +205,11 @@ async function getSprite(name: string): Promise<Sprite | null> {
 }
 
 /**
- * Compose the command Sprites actually runs. `sprite exec` has no `user`
- * option and lands as the platform's unprivileged `sprite` account, so every
- * call goes through sudo: to root by default (matching hetzner/digitalocean),
- * or dropping to a named user when the caller asks.
+ * Compose the command Sprites actually runs. `sprite exec` has no `user` option
+ * and lands as the platform's unprivileged `sprite` account, so every call goes
+ * through sudo — to `vscode` by default, which is where every other provider's
+ * exec lands and what the shared sync layer assumes, or to whatever user the
+ * caller names.
  *
  * `-H` sets HOME for the target user, which the agent tooling depends on.
  * Exported for the unit test that pins the quoting.
@@ -230,7 +237,7 @@ export function buildExecArgv(cmd: string, opts?: CloudExecOptions): string[] {
     prelude.push(`export ${k}=${shq(v)}`);
   }
   const inner = [...prelude, cmd].join('\n');
-  const user = opts?.user ?? 'root';
+  const user = opts?.user ?? BOX_USER;
   if (user === 'root') return ['-n', '-H', 'bash', '-lc', inner];
   return ['-n', '-H', '-u', user, 'bash', '-lc', inner];
 }
@@ -572,7 +579,12 @@ async function chownUploaded(name: string, remotePaths: string[]): Promise<void>
   if (remotePaths.length === 0) return;
   const cmd = `chown ${BOX_OWNER} ${remotePaths.map(shq).join(' ')}`;
   try {
-    await execOnSprite(name, cmd, { attemptTimeoutMs: 30_000 });
+    // Root, explicitly: `exec` defaults to `vscode`, and chowning a
+    // `sprite`-owned file TO another user needs privileges vscode doesn't have.
+    // It would fail silently here, leave the file owned by the platform user,
+    // and the next consumer's `rm` in sticky /tmp would fail — which is exactly
+    // how the workspace seed broke ("Operation not permitted" on the tarball).
+    await execOnSprite(name, cmd, { user: 'root', attemptTimeoutMs: 30_000 });
   } catch {
     // the file is at least present and readable
   }

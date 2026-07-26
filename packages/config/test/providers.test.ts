@@ -80,9 +80,40 @@ describe('provider table is the single source of truth', () => {
     });
 
     it('the other paste-a-token providers stay paste-a-token', () => {
-      for (const name of ['hetzner', 'e2b', 'digitalocean']) {
+      for (const name of ['hetzner', 'e2b', 'digitalocean', 'sprites']) {
         expect(hintFor(name)).toMatch(/paste/i);
         expect(hintFor(name)).not.toMatch(/browser|sign-?in/i);
+      }
+    });
+  });
+
+  // `rebuildMinutes` is rendered as "~<value> min" by the install wizard and the
+  // stale-base prompt. A value carrying its own prose reads as garbage —
+  // "~1-2.5 per box min" shipped exactly once and was visible on the first real
+  // `agentbox sprites claude`.
+  describe('rebuildMinutes renders inside "~<value> min"', () => {
+    it('is a bare number or number range for every provider', () => {
+      for (const p of PROVIDERS) {
+        expect(p.rebuildMinutes, `${p.name}: ${p.rebuildMinutes}`).toMatch(
+          /^\d+(\.\d+)?(-\d+(\.\d+)?)?$/,
+        );
+      }
+    });
+  });
+
+  // Copy that says "your base image is out of date, rebuild the base?" is
+  // nonsense for a provider that has no base image — the wizard branches on
+  // this, so the flag has to stay attached to the right providers.
+  describe('baseKind marks the providers with no base image', () => {
+    it('only sprites installs its runtime per box', () => {
+      const perBox = PROVIDERS.filter((p) => p.baseKind === 'per-box').map((p) => p.name);
+      expect(perBox).toEqual(['sprites']);
+    });
+
+    it('every other provider bakes a reusable base', () => {
+      for (const p of PROVIDERS) {
+        if (p.name === 'sprites') continue;
+        expect(p.baseKind ?? 'baked', p.name).toBe('baked');
       }
     });
   });

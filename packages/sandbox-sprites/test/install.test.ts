@@ -123,6 +123,16 @@ describe('installSpriteBase', () => {
     expect(on.execs.at(-1)?.opts?.env?.AGENTBOX_SPRITES_VNC).toBe('1');
   });
 
+  // Regression: `backend.exec` defaults to `vscode`, but this script is what
+  // CREATES that user — so both of its execs must ask for root explicitly or
+  // the very first one dies with `sudo: unknown user vscode`.
+  it('runs both of its execs as root', async () => {
+    const h = harness();
+    await h.run();
+    expect(h.execs).toHaveLength(2);
+    for (const e of h.execs) expect(e.opts?.user).toBe('root');
+  });
+
   // A retry would race a still-running apt from the abandoned attempt and
   // deadlock on the dpkg lock.
   it('never retries the installer exec', async () => {

@@ -216,10 +216,17 @@ export async function maybeRunSetupWizard(args: WizardArgs): Promise<WizardOutco
     const provider = args.provider ?? 'docker';
     const mins = rebuildMinutesFor(provider);
     const yamlSuffix = proj.hasAgentboxYaml ? '' : ' and run Setup Wizard';
+    // Providers with no base image (sprites) have nothing to "recreate" —
+    // `prepare` only re-validates, and the refreshed runtime installs into each
+    // box at create time. Offering to "rebuild the base" there is nonsense.
+    const perBox = isProviderKind(provider) && providerMeta(provider).baseKind === 'per-box';
     const rebuild = await confirm({
-      message:
-        `The ${provider} base image is out of date. ` +
-        `Recreate the base${yamlSuffix}? (rebuilds the base — ~${mins} min — then starts fresh)`,
+      message: perBox
+        ? `The ${provider} box runtime is out of date. ` +
+          `Re-validate it${yamlSuffix}? (${provider} has no base image — the refreshed runtime ` +
+          `installs into the box, ~${mins} min — then starts fresh)`
+        : `The ${provider} base image is out of date. ` +
+          `Recreate the base${yamlSuffix}? (rebuilds the base — ~${mins} min — then starts fresh)`,
       initialValue: true,
     });
     if (!rebuild) {
@@ -409,9 +416,13 @@ function nonInteractiveOutcome(
 ): WizardOutcome {
   if (args.baseStatus?.state === 'stale') {
     const provider = args.provider ?? 'docker';
+    const perBox = isProviderKind(provider) && providerMeta(provider).baseKind === 'per-box';
     log.warn(
-      `${provider} base image is out of date (${args.baseStatus.reason}); booting on the existing base. ` +
-        `Run \`agentbox prepare --provider ${provider} --force\` to rebuild.`,
+      perBox
+        ? `${provider} box runtime is out of date (${args.baseStatus.reason}); this box installs the ` +
+          `recorded runtime. Run \`agentbox prepare --provider ${provider}\` to re-validate.`
+        : `${provider} base image is out of date (${args.baseStatus.reason}); booting on the existing base. ` +
+          `Run \`agentbox prepare --provider ${provider} --force\` to rebuild.`,
     );
   }
   const fromDefault = args.checkpointFromDefault !== false;

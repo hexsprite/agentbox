@@ -170,7 +170,11 @@ async function uploadOneEntry(args: UploadOneArgs): Promise<void> {
   // permitted" and the parent-chain loop never reaches its terminator. Forcing
   // root makes the chown a no-op (target uid matches existing owner) and lets
   // the parent-chain walk complete.
-  const wantsRoot = args.backend.name === 'vercel' || args.backend.name === 'e2b';
+  // Sprites joins for the same reason — its exec also defaults to `vscode`.
+  const wantsRoot =
+    args.backend.name === 'vercel' ||
+    args.backend.name === 'e2b' ||
+    args.backend.name === 'sprites';
   const execOpts = wantsRoot ? { user: 'root' as const } : undefined;
   const res = await args.backend.exec(args.handle, cmd, execOpts);
   if (res.exitCode !== 0) {
