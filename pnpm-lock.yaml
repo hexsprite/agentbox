@@ -751,6 +751,43 @@ importers:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.19.19)(lightningcss@1.32.0)
 
+  packages/sandbox-sprites:
+    dependencies:
+      '@agentbox/config':
+        specifier: workspace:*
+        version: link:../config
+      '@agentbox/core':
+        specifier: workspace:*
+        version: link:../core
+      '@agentbox/sandbox-cloud':
+        specifier: workspace:*
+        version: link:../sandbox-cloud
+      '@agentbox/sandbox-core':
+        specifier: workspace:*
+        version: link:../sandbox-core
+      '@clack/prompts':
+        specifier: ^0.9.0
+        version: 0.9.1
+      '@fly/sprites':
+        specifier: ^0.1.0
+        version: 0.1.0
+      commander:
+        specifier: ^12.1.0
+        version: 12.1.0
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.1
+        version: 22.19.19
+      tsup:
+        specifier: ^8.3.5
+        version: 8.5.1(jiti@2.7.0)(postcss@8.5.14)(tsx@4.22.3)(typescript@5.9.3)(yaml@2.9.0)
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.19.19)(lightningcss@1.32.0)
+
   packages/sandbox-vercel:
     dependencies:
       '@agentbox/config':
@@ -1535,6 +1572,10 @@ packages:
 
   '@floating-ui/utils@0.2.11':
     resolution: {integrity: sha512-RiB/yIh78pcIxl6lLMG0CgBXAZ2Y0eVHqMPYugu+9U0AeT6YBeiJpf7lbdJNIugFP5SIjwNRgo4DhR1Qxi26Gg==}
+
+  '@fly/sprites@0.1.0':
+    resolution: {integrity: sha512-08jnuPEFmImqy3/iwL+jQJ6IwrHuZlmR3w9dRSSUiZ3N4uMSqWMi5FLyL1UKiL/vtcAb9Cayj8gHsEtckDDfkQ==}
+    engines: {node: '>=24.0.0'}
 
   '@fumadocs/tailwind@0.0.5':
     resolution: {integrity: sha512-ENKPWUDRmriccsrUDE4bDBq3FNr/ms3BP2rWlsAEMV1yP23pcCaan+ceGfeBUsAQjw7sj9Q3R4Kl3g/TCStPzQ==}
@@ -6074,6 +6115,8 @@ snapshots:
       react-dom: 19.2.7(react@19.2.7)
 
   '@floating-ui/utils@0.2.11': {}
+
+  '@fly/sprites@0.1.0': {}
 
   '@fumadocs/tailwind@0.0.5(@tailwindcss/oxide@4.3.0)(tailwindcss@4.3.0)':
     optionalDependencies:
