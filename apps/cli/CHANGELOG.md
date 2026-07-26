@@ -37,6 +37,12 @@ CLI, not the raw commits.
   `agentbox hub jobs list` / `hub jobs show <id>` inspect it directly.
 - `ssh agentbox-hub` opens a shell on a deployed control box — the deploy adds a
   `Host` entry for its VPS to AgentBox's managed SSH config, alongside your boxes.
+- **A control box no longer needs a GitHub App.** `agentbox hub setup` now reuses
+  the token from your own `gh auth login`, so nothing has to be installed or
+  approved on GitHub — it works on repos you only collaborate on, and in orgs
+  where installing an App is an admin decision you can't make. The hub does the
+  git work itself, so boxes never receive a credential at all. New `hub.gitAuth`
+  key; `--git-auth app` keeps the old per-repo App tokens.
 
 ### Changed
 
@@ -116,6 +122,14 @@ CLI, not the raw commits.
   `~/.agentbox/logs/hub-{setup,deploy}.log`, the VPS is recorded as soon as it
   boots (it is left running), and the failure prints how to reach it and read the
   hub's own logs.
+- A control box with no GitHub App configured failed to boot at all, so it could
+  never come up far enough for you to configure one.
+- `gh pr create` (and the other `gh` commands) from a box on a control box exited
+  127 — `gh` wasn't installed on the hub.
+- Config keys AgentBox accepts were flagged as invalid by editors: 15 registered
+  keys were missing from the published JSON schema, including `git.pushMode`,
+  `cloud.viaHub`, `update.channel`, and the whole `ssh`/`git`/`cloud`/
+  `integrations` branches. `box.provider` also rejected `remote-docker`.
 
 ## [0.27.0] - 2026-07-16
 
