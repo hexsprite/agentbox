@@ -13,13 +13,15 @@ It's the same `@agentbox/relay` core you already run locally — the relay daemo
 
 ## Deploy the control box
 
-One-time setup creates a GitHub App (the control box leases short-lived push tokens with it) and provisions the VPS. You need [`agentbox hetzner login`](/docs/hetzner) first.
+One-time setup picks up the GitHub token you already have and provisions the VPS. You need [`agentbox hetzner login`](/docs/hetzner) first, and a working `gh auth login` (or any git credential helper) so there's a token to reuse.
 
 ```bash
-agentbox hub setup                 # create the App, then deploy (pick Hetzner)
+agentbox hub setup                 # reuse your gh token, then deploy (pick Hetzner)
 ```
 
-Already have the App from a previous run? Deploy (or redeploy) the control box directly:
+It shows which token it found, which account it belongs to, and what it can do, then asks before copying it. **Nothing has to be installed or approved on GitHub** — which is the point: it works on repos you only collaborate on, and in orgs where you can't install an App.
+
+Already set up from a previous run? Deploy (or redeploy) the control box directly:
 
 ```bash
 agentbox hub deploy hetzner        # reuses ~/.agentbox/control-plane creds
@@ -30,6 +32,28 @@ This provisions a small VPS, installs the hub over Docker + Caddy, and serves it
 When it finishes, open `https://<ip>.sslip.io`, sign in with those credentials, and you'll see the dashboard.
 
 The deploy also mints a headless **API key** (`AGENTBOX_HUB_API_KEY`) and records it alongside the other deploy secrets in `~/.agentbox/control-plane/control-plane.env` (mode `0600`). It's the `Authorization: Bearer` credential for the hub's public [REST API](/docs/api) on the control box — so scripts and the menu-bar app can call `/api/v1` on the deployed hub without a browser login. It gates only `/api/v1`, never the web UI (that still needs your admin password).
+
+### How the control box reaches GitHub
+
+Two modes, set by [`hub.gitAuth`](/docs/configuration) or `agentbox hub setup --git-auth`:
+
+| | `gh` (default) | `app` |
+|---|---|---|
+| Credential | your own GitHub token, held by the hub | a GitHub App private key, held by the hub |
+| Boxes get | **nothing** — they ask the hub to push | a 1-hour, single-repo token, per push |
+| Setup needs | `gh auth login` (you) | the repo **owner** to install the App |
+| Works on | any repo you can push to | only repos the App is installed on |
+
+In `gh` mode the box runs `git push`, the hub pulls the branch out of it as a git bundle, and the hub does the real push with its own token — the same path your laptop already uses for cloud boxes. A credential never enters the box or any snapshot of it.
+
+`app` mode is tighter when you can get it: the token it hands out is scoped to one repo and expires in an hour. Choose it when you own the repos (or your org will install the App):
+
+```bash
+agentbox hub setup --git-auth app     # create a GitHub App instead
+agentbox hub add                      # authorize a repo on it (app mode only)
+```
+
+<Callout type="info" title="Which token the hub holds">In `gh` mode the hub holds a normal user token, so it can reach every repo you can — broader than an App's per-repo token, though it never leaves the server. Prefer a **fine-grained** token limited to the repos you'll actually use; `hub setup` warns if the one it finds carries scopes like `admin:org` or `delete_repo`. Revoke it any time at [github.com/settings/tokens](https://github.com/settings/tokens) (or `gh auth logout`), then re-run `hub setup`.</Callout>
 
 ### Getting a shell on the control box
 
