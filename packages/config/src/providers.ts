@@ -115,9 +115,10 @@ export const PROVIDERS = [
     loginHint: 'paste an org token from `sprite org auth` (or sprites.dev)',
     // Not a bake: Sprites has no reusable base image, so the runtime installs
     // inside each box at create time. Cheap because Fly's base already ships
-    // Node 24, git, tmux, gh, claude and codex — measured ~2 min on a live
-    // sprite. Collapses to seconds once Fly ships fork-from-sprite.
-    rebuildMinutes: '~2 per box',
+    // Node 24, git, tmux, gh, claude and codex — measured 50s (--no-vnc, small
+    // repo) to ~2.5 min (VNC + a large clone) on live sprites. Collapses to
+    // seconds once Fly ships fork-from-sprite.
+    rebuildMinutes: '1-2.5 per box',
     blurb: 'Fly.io Sprites microVMs (scale-to-zero; base installs per box until Fly ships fork)',
     sizeDesc:
       'Per-provider override of `box.size` for sprites. `cpu-memory[-disk]` GB spec (e.g. `4-8-40`), applied per create.',

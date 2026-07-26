@@ -17,7 +17,9 @@ Two things set Sprites apart from every other AgentBox cloud, and both are worth
 
 ### There is no base image — the runtime installs per box
 
-Daytona, Hetzner, DigitalOcean, Vercel and E2B all bake a base once, at `agentbox prepare`, and every box boots from it in seconds. Sprites has no create-from-image and no fork-from-template yet, so **the AgentBox runtime installs inside each box at create time**, adding roughly **two minutes** to every `create`.
+Daytona, Hetzner, DigitalOcean, Vercel and E2B all bake a base once, at `agentbox prepare`, and every box boots from it in seconds. Sprites has no create-from-image and no fork-from-template yet, so **the AgentBox runtime installs inside each box at create time**.
+
+In practice that's **50 seconds to about two and a half minutes**, depending mostly on whether you install the browser stack (see below) and how large your repo is.
 
 That is survivable only because Fly's base is already an agent image. It ships Ubuntu 26.04 with Node 24, bun, deno, go, java, ruby, git, tmux, `gh`, and **Claude Code and Codex already installed** — so the per-box install is filling gaps (Docker, the `vscode` user, `agentbox-ctl`, the shims), not building a machine from scratch.
 
@@ -39,7 +41,7 @@ You need two things: the `sprite` CLI on your machine, and an org token.
 curl -fsSL https://sprites.dev/install.sh | sh   # installs to ~/.local/bin
 ```
 
-The CLI is a genuine prerequisite, not a convenience: AgentBox shells out to `sprite console` for interactive attach and to `sprite proxy` for the host↔box relay tunnel. `agentbox doctor --provider sprites` checks for it.
+The CLI is a genuine prerequisite, not a convenience: AgentBox shells out to `sprite exec` for interactive attach and to `sprite proxy` for the host↔box relay tunnel. `agentbox doctor --provider sprites` checks for it.
 
 Then the interactive wizard:
 
@@ -84,7 +86,7 @@ The flow is standard. The workspace is seeded from a host git bundle plus your s
 agentbox create --provider sprites -n my-box
 ```
 
-Expect the first log lines within a second or two (sprites create almost instantly), then a couple of minutes of base-install output. Each install step prints a `>>> BEGIN` / `<<< END` marker to `~/.agentbox/logs/create.log`, so if something stalls you can see exactly which step it stalled on.
+Expect the first log lines within a second or two (sprites create almost instantly), then the base-install output. Each install step prints a `>>> BEGIN` / `<<< END` marker to `~/.agentbox/logs/create.log`, so if something stalls you can see exactly which step it stalled on.
 
 ### Sizing
 
@@ -98,7 +100,7 @@ Pin a default with `box.sizeSprites` or `box.size`. Unset gives 2 vCPU / 4 GB / 
 
 ### Skipping the browser stack
 
-The VNC and Chromium install is about 45 seconds of the two minutes. On a provider that bakes once that's free; here you pay it per box. If you don't need [browser and screen](/docs/browser-and-screen) support:
+The VNC and Chromium install is about 45 seconds of that. On a provider that bakes once it's free; here you pay it per box. If you don't need [browser and screen](/docs/browser-and-screen) support, skipping it is the single biggest win available:
 
 ```bash
 agentbox create --provider sprites --no-vnc
@@ -128,7 +130,7 @@ Pausing still works, and is free — see above. For checkpoint-backed workflows 
 
 ## Attach and terminals
 
-`agentbox claude` / `codex` / `opencode` / `shell` all work normally. Attach goes through `sprite console`, which lands on Fly's platform user and immediately drops into your box's `vscode` session — so tmux, scrollback and resize behave as they do everywhere else. See [access-your-box](/docs/access-your-box).
+`agentbox claude` / `codex` / `opencode` / `shell` all work normally. Attach goes through `sprite exec --tty`, dropping straight into your box's `vscode` session — so tmux, scrollback and resize behave as they do everywhere else. See [access-your-box](/docs/access-your-box).
 
 Sprites boxes are not reachable over plain SSH, so the sshfs mount and VS Code Remote-SSH paths described in [access-your-box](/docs/access-your-box) don't apply here.
 
@@ -137,4 +139,4 @@ Sprites boxes are not reachable over plain SSH, so the sshfs mount and VS Code R
 - **Concurrency.** Your Sprites plan caps how many sprites can be running and warm at once (10 each by default). Hitting the cap fails the create with a clear error rather than queueing forever.
 - **No SSH.** See above.
 - **No checkpoints.** See above.
-- **Create takes ~2 minutes.** See above.
+- **Create takes 50s–2.5 min.** See above.

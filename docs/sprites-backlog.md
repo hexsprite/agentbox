@@ -1,10 +1,12 @@
 # Fly.io Sprites provider — build-out backlog
 
-> **Provider status: shipped, pending live e2e sign-off.** `--provider sprites`
-> is wired end to end (config, CLI, hub, relay, doctor, prepare, attach) and
-> covered by 133 unit tests including the shared `CloudBackend` conformance
-> suite. What is *not* yet signed off is the live create → attach → destroy loop
-> against a real sprite; see [Live e2e checklist](#live-e2e-checklist).
+> **Provider status: shipped and live-verified.** `--provider sprites` is wired
+> end to end (config, CLI, hub, relay, doctor, prepare, attach) and covered by
+> 138 unit tests including the shared `CloudBackend` conformance suite. The live
+> create → exec → attach → pause → destroy loop has been run against real
+> sprites in org `jordan-baker`; results and the seven bugs it caught are in
+> [Live e2e results](#live-e2e-results). One item remains unverified: the
+> composed idle→sleep billing loop, which needs a long idle window.
 
 Status tracker for **Fly.io Sprites** (`--provider sprites`) as an eighth
 AgentBox backend, alongside docker / daytona / hetzner / vercel / e2b /
@@ -62,16 +64,28 @@ the baked configs. VNC/Chromium is opt-in (see below).
 
 | Step | Measured |
 |---|---|
-| `sprite create` | **0.9–2.1s** |
+| `sprite create` | **0.9–2.5s** |
 | `apt-get update` | 4.5s |
 | `docker.io` install | 16.6s |
 | VNC stack (tigervnc + novnc + websockify) | 28.4s |
 | Playwright Chromium download (114 MB) | 14.6s |
 | `npm i -g opencode-ai` | ~7s |
+| **base install, end to end** | **1m40s** (with VNC/Chromium) |
+| **`agentbox create`**, this repo, VNC on | **~2m25s** (install + 22 MB clone + credentials + bootstrap) |
+| **`agentbox create --no-vnc`**, small repo | **~50s** (the e2e test's measured round-trip incl. destroy) |
 
-**Total base install ≈ 2 minutes**, not the 7–10 a from-scratch Ubuntu bake
-costs on hetzner/digitalocean. That is the entire reason install-per-box is
-viable, and why the warm pool below is a nice-to-have rather than a blocker.
+So the honest range is **~50s to ~2.5 min**, driven mostly by whether the
+VNC/Chromium stack is installed (~45s) and how big the workspace clone is — not
+the 7–10 minutes a from-scratch Ubuntu bake costs on hetzner/digitalocean. That
+is the entire reason install-per-box is viable, and why the warm pool below is a
+nice-to-have rather than a blocker.
+
+### DinD works
+
+An open question until the first live box: Sprites microVMs **do** permit nested
+containers. `docker ps` inside the box succeeds with `vscode` in the `docker`
+group, so `launchDockerd: true` is correct. (E2B turned out the same way against
+an initial assumption it wouldn't; Vercel needed a platform change.)
 
 ### The URL reaches exactly one port
 
@@ -168,12 +182,12 @@ On the provider side, `pause()` closes every `sprite proxy` tunnel for the box.
 Since the tunnel is the only thing talking to an idle sprite, **dropping the
 tunnels IS the pause** — and it's real work, not a state-recording no-op.
 
-> **Not yet validated live.** Step 7 of the e2e checklist — leave a box idle,
-> confirm via `sprite list` that it actually reaches `cold` and stops accruing
-> CPU hours — is the test that proves this end to end. Until it runs, the
-> billing story rests on the two component observations (polling keeps a sprite
-> awake; a sprite with no traffic reaches `cold`) rather than on the composed
-> behaviour.
+> **Partly validated live.** `agentbox pause` demonstrably drops both tunnels
+> and kills both `sprite proxy` processes, and an untouched sprite is known to
+> reach `cold` on its own. What has not been watched end to end is the composed
+> loop — idle box → keepalive idle-pause → poller torn down → sprite sleeps
+> unaided — which needs a full idle window with nothing else touching the box.
+> See [Still unverified](#still-unverified).
 
 ### 2. No reusable base image
 
@@ -220,43 +234,90 @@ Explicitly **not** in `PERSISTENT_SSH_PROVIDERS` / `IDE_PROVIDERS` /
 `SSH_MOUNT_PROVIDERS`: `sprite console` is not real SSH, so there is no sshfs
 mount and no VS Code Remote-SSH.
 
-## Live e2e checklist
+## Live e2e results
 
-Follow the `CLAUDE.md` rule: background the command, `tail -f
-~/.agentbox/logs/create.log`, stop the moment the log shows what's needed.
+Run against org `jordan-baker`, 2026-07-26. Every sprite created was destroyed;
+`sprite list` verified empty at the end.
 
-1. `agentbox sprites login` → `agentbox doctor --provider sprites` — three green rows.
-2. `agentbox prepare --provider sprites` — fingerprint written, no bake attempted.
-3. `node apps/cli/dist/index.js create -y -n sprite-smoke --provider sprites &`,
-   then tail. Watch for: sprite created → assets uploaded → installer steps →
-   workspace seeded → `agentbox-ctl bootstrap` → box ready.
-4. `agentbox shell sprite-smoke -- echo agentbox-e2e-ping` — proves exec + the
-   `sudo -u vscode` wrap.
-5. `agentbox status --inspect` — preview URL resolves; confirm the bridge poller
-   connects (relay log) through the `sprite proxy` tunnel.
-6. `agentbox claude --provider sprites` driven through `pnpm drive` — proves
-   `sprite console` attach + tmux + resize, and the `initialInput` handoff.
-7. **Billing check.** Leave a box idle past the autopause window. Confirm via
-   `sprite list` / the Fly dashboard that it reaches `cold` and stops accruing
-   CPU hours. This validates or refutes the whole of design problem 1.
-8. `agentbox destroy sprite-smoke -y`, then `sprite list` — verify clean.
-9. `apps/cli/test/cloud-e2e-sprites.test.ts` (`describe.skipIf(!process.env.SPRITES_TOKEN)`)
-   so the smoke is repeatable.
+| Step | Result |
+|---|---|
+| `agentbox sprites login` → `doctor --provider sprites` | three green rows (credentials, sprite CLI, box runtime) |
+| `agentbox prepare --provider sprites` | fingerprint written, nothing baked, `base freshness: up to date` |
+| `agentbox create --provider sprites` | box ready in ~2m25s |
+| workspace | `/workspace` on branch `agentbox/<box>`, full history, correct HEAD |
+| `agentbox shell <box> -- …` | runs as `vscode`, cwd `/home/vscode`, node 24 + claude 2.1.207 on PATH |
+| DinD | `docker ps` succeeds |
+| agent credentials | claude / codex / opencode all seeded |
+| in-box bootstrap | `dockerd=up ctl=up vnc=up` |
+| relay poller | task-state events streaming to the host through the `sprite proxy` tunnel |
+| `agentbox url` | opens `https://<box>-<org>.sprites.app` |
+| interactive attach | `vscode@<box>:/workspace$` inside tmux |
+| `agentbox pause` | both tunnels + both proxy processes gone |
+| `agentbox destroy` | sprite gone, no orphan processes, no state left |
 
-Also worth checking during the first live run:
+### Bugs it caught
 
-- **DinD actually works.** The installer lays down docker.io and the scaffold
-  starts `agentbox-dockerd-start`, but whether a Sprites microVM permits nested
-  containers is unverified. E2B turned out to allow it despite an initial
-  assumption it wouldn't; Vercel needed a platform change. If it doesn't work,
-  flip `launchDockerd` to false in `src/index.ts` and note it here.
+All seven are fixed with regression tests; see the `fix(sprites):` commits.
+
+1. **`npm: command not found` aborted every install.** Fly's toolchain lives at
+   `/.sprite/bin`, added to the platform user's PATH by a shell profile rather
+   than `/etc/environment` — so root and `vscode` both started without it.
+2. **`execFileHTTP` throws on non-zero exit, it does not return.** Every
+   `CloudBackend.exec` caller branches on `exitCode`, so a routine failing probe
+   became an unhandled `ExecError` that aborted create.
+3. **Uploaded files stayed owned by the platform user.** `/tmp` is sticky, so
+   `vscode` could read but not delete them — agent-credential seeding untarred
+   fine and then died on `rm: Operation not permitted`.
+4. **exec landed in `/home/sprite`.** `sudo -H` sets HOME without changing
+   directory, so relative paths resolved in Fly's account home.
+5. **`agentbox url` failed outright.** Omitting `signedPreviewUrl` made
+   `resolveUrl` claim the URL needs a header token browsers can't attach —
+   untrue; it is org-authenticated and opens fine for the owner.
+6. **Attach never started a tmux session.** See below.
+7. **Destroy left an orphan `sprite proxy`.** The host poller outlives
+   `backend.destroy`, so a failed poll in that window drove `recoverPreviewUrl`
+   into minting a tunnel for a sprite that no longer existed.
+
+### Why attach uses `sprite exec --tty`, not `sprite console`
+
+The first implementation used `sprite console` plus `AttachSpec.initialInput` —
+the daytona trick, where the inner command is typed at the prompt because the
+transport won't take a command argument. It never worked: the handoff arms 400ms
+after the remote's first byte, and `sprite console` emits terminal capability
+queries immediately, well before `bash --login` is ready. The line was swallowed
+every time and no tmux session was created.
+
+`sprite exec --tty -- sudo -u vscode bash -lc '<inner>'` puts the command in
+argv. No race, no staged script, and one shape for every attach kind.
+
+Two notes for whoever debugs this next:
+
+- `sprite console` is not broken — it works fine under a real TTY (`script -q
+  /dev/null sprite console …` reaches a prompt immediately). It produces **zero
+  bytes** under the drive harness's node-pty, which is what made this look like a
+  CLI bug at first. Same for `sprite exec --tty`. Verifying either against a live
+  sprite needs `script`, not `pnpm drive`.
+- CLI rc43 → rc46 changed neither behaviour. (rc43 separately had a `sprite
+  destroy` that failed on a TTY error; rc46 fixes that.)
+
+### Still unverified
+
+- **The composed billing loop.** The two halves are each verified — polling keeps
+  a sprite awake, and an untouched sprite reaches `cold` on its own — and
+  `agentbox pause` demonstrably drops both tunnels and their processes. What
+  hasn't been watched end to end is an idle box going: keepalive idle-pause →
+  poller torn down → sprite reaches `cold` unaided. That needs a full idle window
+  with nothing else touching the box.
 - **Upload ceiling.** `filesystem.writeFile` takes `string | Buffer` with no
-  streaming API, so a workspace tarball is fully buffered on the host. Measure
-  where that starts to hurt.
-- **`sprite exec --http-post` exit frames.** Every CLI probe during the platform
-  investigation ended with `Error: no exit frame received` on stderr while still
-  producing correct stdout. Harmless for the CLI probes, but confirm the SDK's
-  `execFileHTTP` doesn't have the same wart in a way that corrupts `exitCode`.
+  streaming API, so a workspace tarball is fully buffered on the host. A 22 MB
+  clone tar was fine; where it starts to hurt is unmeasured.
+- **`--http-post` exit frames.** Every `sprite exec --http-post` CLI probe ends
+  with `Error: no exit frame received` on stderr while still producing correct
+  stdout. The SDK's `execFileHTTP` has not shown the same wart, and exit codes
+  have been correct throughout — but it's worth knowing about.
+- `apps/cli/test/cloud-e2e-sprites.test.ts`
+  (`describe.skipIf(!process.env.SPRITES_TOKEN)`) is not written yet, so the
+  smoke isn't repeatable in CI.
 
 ## Deferred: the warm pool (v2)
 
