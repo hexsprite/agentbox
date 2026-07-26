@@ -326,23 +326,43 @@ async function pollHealthz(
 }
 
 /**
- * Whether the hub answers on the VPS's own published port. Splits a failing
- * healthz into "the hub is down" vs "the hub is up and Caddy can't reach it".
+ * Read a failing healthz back to the user as one of three distinct causes. The
+ * hub answering on the VPS's own port but not through HTTPS used to be reported
+ * as a single "Caddy can't reach it → wrong upstream port" guess, which is wrong
+ * whenever the certificate is the problem — and it routinely is: sslip.io names
+ * are derived from the IP, so a recycled Hetzner address can arrive already at
+ * Let's Encrypt's per-identifier rate limit, through no fault of the deploy.
  */
 async function diagnoseUnhealthy(
   target: SshTargetArgs,
   appPort: number,
   source: HubDeploySource,
 ): Promise<string> {
+  const files = composeFileArgs(source);
   const local = await sshExec(target, `curl -fsS -m 5 http://127.0.0.1:8787/healthz`);
   if (local.exitCode === 0) {
+    // The hub is fine — so this is Caddy's hop, either TLS or the upstream.
+    const caddy = await sshExec(
+      target,
+      `cd ${REMOTE_APP_DIR} && docker compose ${files} logs --tail=200 caddy 2>&1 | grep -E 'tls.obtain|certificate|rateLimited' | tail -8`,
+    );
+    const certTrouble = /could not get certificate|rateLimited|tls\.obtain/.test(caddy.stdout);
+    if (certTrouble) {
+      const rateLimited = /rateLimited/.test(caddy.stdout);
+      return (
+        `the hub IS healthy on the VPS (127.0.0.1:8787 answered) — the HTTPS certificate is the problem, not the hub.\n` +
+        (rateLimited
+          ? `Let's Encrypt is rate-limiting this exact hostname (sslip.io derives it from the IP, and this address has hit the 5-certs-per-week cap — likely a recycled IP). Destroy this VPS and deploy again to get a different IP, or pass --domain with a name you control.\n`
+          : `Caddy could not obtain a certificate. Check that :80 and :443 are reachable from the internet.\n`) +
+        `--- caddy (cert lines) ---\n${caddy.stdout.trim()}`
+      );
+    }
     return (
       `the hub IS healthy on the VPS (127.0.0.1:8787 answered) — Caddy cannot reach it, ` +
       `so its upstream port (app:${String(appPort)}) does not match what the container listens on. ` +
       `Check \`docker compose ps\` on the VPS and redeploy with a ref matching this CLI.`
     );
   }
-  const files = composeFileArgs(source);
   const ps = await sshExec(target, `cd ${REMOTE_APP_DIR} && docker compose ${files} ps`);
   const logs = await sshExec(
     target,
