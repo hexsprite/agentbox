@@ -1,8 +1,13 @@
 import { spawn } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
 import { log, spinner } from '@clack/prompts';
 import { loadEffectiveConfig } from '@agentbox/config';
 import { ensureHub, getHubStatus, stopHub, type HubStatus } from '@agentbox/sandbox-docker';
-import { hostOpenCommand } from '@agentbox/sandbox-core';
+import {
+  controlPlaneDeployPath,
+  hostOpenCommand,
+  type ControlPlaneDeployRecord,
+} from '@agentbox/sandbox-core';
 import { Command } from 'commander';
 import { handleLifecycleError } from './_errors.js';
 import { rehydrateFromState } from './relay.js';
@@ -96,6 +101,26 @@ function renderStatus(s: HubStatus): string {
   return ['hub: not running', `  log:  ${s.logFile}`].join('\n');
 }
 
+/**
+ * What `hub deploy` recorded for the control box at `url` — the only trace of
+ * which build a remote hub is running (the VPS keeps no version marker, and in
+ * package mode not even a git checkout to `rev-parse`). Matched on URL so a
+ * `--url` probe of somebody else's hub doesn't get this machine's record.
+ * Best-effort: an absent or unreadable record just omits the line.
+ */
+async function readDeployedSource(url: string): Promise<string | null> {
+  try {
+    const raw = await readFile(controlPlaneDeployPath(), 'utf8');
+    const rec = JSON.parse(raw) as ControlPlaneDeployRecord;
+    if (rec.url !== url || !rec.source) return null;
+    return rec.source.kind === 'package'
+      ? `@madarco/agentbox@${rec.source.spec} (npm)`
+      : `${rec.source.repoUrl}@${rec.source.repoRef} (built from source)`;
+  } catch {
+    return null;
+  }
+}
+
 const statusSub = new Command('status')
   .description(
     'Show hub status — the remote control box (reachability + box/event counts) when one is configured, else the local hub process',
@@ -111,8 +136,9 @@ const statusSub = new Command('status')
       // Remote (a control box is configured, or --url given): probe its /healthz.
       if (target.mode === 'remote') {
         const st = await probeControlPlaneStatus(target.url);
+        const deployed = await readDeployedSource(st.url);
         if (opts.json) {
-          process.stdout.write(JSON.stringify(st) + '\n');
+          process.stdout.write(JSON.stringify({ ...st, ...(deployed ? { deployed } : {}) }) + '\n');
           return;
         }
         process.stdout.write(
@@ -120,6 +146,7 @@ const statusSub = new Command('status')
             `hub: remote (${st.healthy ? 'reachable' : 'UNREACHABLE'})`,
             `  url:    ${st.url}`,
             `  health: ${st.detail}`,
+            ...(deployed ? [`  build:  ${deployed}`] : []),
           ].join('\n') + '\n',
         );
         return;

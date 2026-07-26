@@ -6,21 +6,28 @@
  *
  * Shape:
  *   1. firewall — SSH from the host egress IP, :80/:443 open (ACME + serving).
- *   2. cloud-init — stock Ubuntu boots, installs Docker + git, clones the repo.
- *   3. over ssh (as root): scp the secret `.env` + a Caddy compose overlay, then
- *      `docker compose up -d --build` (Postgres + the app + Caddy, all in-compose).
+ *   2. cloud-init — stock Ubuntu boots, installs Docker + git (+ clones the repo
+ *      in source mode).
+ *   3. over ssh (as root): scp the secret `.env` + a Caddy compose overlay (+ the
+ *      whole compose stack in package mode), then `docker compose up -d --build`
+ *      (the app + Caddy, all in-compose).
  *   4. poll `https://<domain>/healthz` until the cert + app are live.
  * Secrets ride scp (per-deploy key), never cloud-init user-data (cloud metadata).
+ *
+ * The hub image comes from one of two places — see `HubDeploySource`. The default
+ * installs the published npm package; `--ref` clones and builds the monorepo.
  */
 
 import { readFile, mkdir, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadEffectiveConfig, mergeConfigYaml } from '@agentbox/config';
+import type { HubDeploySource } from '@agentbox/sandbox-core';
 import { makeHetznerClient, type HetznerServer } from './client.js';
 import { controlPlaneCloudInit } from './cloud-init.js';
 import { detectEgressIp } from './egress-ip.js';
 import { controlPlaneInboundRules, normalizeSourceCidr } from './firewall.js';
+import { resolveHubDeployAssets } from './hub-deploy-assets.js';
 import { mintSshKey } from './ssh-key.js';
 import { scpUpload, sshExec, waitForSsh, type SshTargetArgs } from './ssh-cli.js';
 import { withHetznerRetry } from './retry.js';
@@ -30,10 +37,8 @@ export interface ControlPlaneHetznerDeployOptions {
   envContent: string;
   /** Override the public hostname (default `<ipv4>.sslip.io`). */
   domain?: string;
-  /** Public git repo cloned on the VPS (default the agentbox repo). */
-  repoUrl?: string;
-  /** Branch / tag / sha to deploy (default `main`). */
-  repoRef?: string;
+  /** npm package vs. clone-and-build. See `HubDeploySource`. */
+  source: HubDeploySource;
   serverType?: string;
   location?: string;
   serverImage?: string;
@@ -216,6 +221,20 @@ function caddyfile(domain: string, appPort: number): string {
 const HUB_CONTAINER_PORT = 8787;
 
 /**
+ * The `-f` list for every `docker compose` call against the control box. Package
+ * mode layers `docker-compose.package.yml` between the base and the Caddy overlay
+ * to swap the `app` service's build block; everything else is shared, which is
+ * what keeps the two modes from drifting. Must match between `up` and the
+ * diagnostics — a mismatched list makes compose treat it as a different project.
+ */
+function composeFileArgs(source: HubDeploySource): string {
+  const files = ['docker-compose.yml'];
+  if (source.kind === 'package') files.push('docker-compose.package.yml');
+  files.push('docker-compose.caddy.yml');
+  return files.map((f) => `-f ${f}`).join(' ');
+}
+
+/**
  * The container port `apps/hub/docker-compose.yml` publishes 8787 to — i.e. the
  * port the hub listens on INSIDE its container, which is what Caddy has to dial
  * over the compose network.
@@ -310,7 +329,11 @@ async function pollHealthz(
  * Whether the hub answers on the VPS's own published port. Splits a failing
  * healthz into "the hub is down" vs "the hub is up and Caddy can't reach it".
  */
-async function diagnoseUnhealthy(target: SshTargetArgs, appPort: number): Promise<string> {
+async function diagnoseUnhealthy(
+  target: SshTargetArgs,
+  appPort: number,
+  source: HubDeploySource,
+): Promise<string> {
   const local = await sshExec(target, `curl -fsS -m 5 http://127.0.0.1:8787/healthz`);
   if (local.exitCode === 0) {
     return (
@@ -319,13 +342,11 @@ async function diagnoseUnhealthy(target: SshTargetArgs, appPort: number): Promis
       `Check \`docker compose ps\` on the VPS and redeploy with a ref matching this CLI.`
     );
   }
-  const ps = await sshExec(
-    target,
-    `cd ${REMOTE_APP_DIR} && docker compose -f docker-compose.yml -f docker-compose.caddy.yml ps`,
-  );
+  const files = composeFileArgs(source);
+  const ps = await sshExec(target, `cd ${REMOTE_APP_DIR} && docker compose ${files} ps`);
   const logs = await sshExec(
     target,
-    `cd ${REMOTE_APP_DIR} && docker compose -f docker-compose.yml -f docker-compose.caddy.yml logs --tail=30 app 2>&1`,
+    `cd ${REMOTE_APP_DIR} && docker compose ${files} logs --tail=30 app 2>&1`,
   );
   return `the hub is NOT answering on the VPS either.\n${ps.stdout.trim()}\n--- app logs (last 30) ---\n${logs.stdout.trim()}`;
 }
@@ -334,9 +355,12 @@ export async function deployControlPlaneToHetzner(
   opts: ControlPlaneHetznerDeployOptions,
 ): Promise<ControlPlaneHetznerDeployResult> {
   const log = opts.onLog ?? (() => {});
-  const repoUrl = opts.repoUrl ?? 'https://github.com/madarco/agentbox.git';
-  const repoRef = opts.repoRef ?? 'main';
+  const source = opts.source;
   const client = makeHetznerClient();
+
+  // Package mode ships the compose stack from the host, so resolve it BEFORE
+  // spending money on a VPS — a partial dev build should fail here, not after.
+  const deployAssets = source.kind === 'package' ? resolveHubDeployAssets() : null;
 
   const stamp = Date.now().toString(36);
   const name = `agentbox-control-plane-${stamp}`;
@@ -363,7 +387,11 @@ export async function deployControlPlaneToHetzner(
   const key = await mintSshKey(keyDir, `agentbox-control-plane-${stamp}`);
   const knownHosts = join(keyDir, 'known_hosts');
 
-  log(`provisioning ${opts.serverType ?? 'cx23'} VPS (cloning ${repoUrl}@${repoRef})…`);
+  log(
+    source.kind === 'package'
+      ? `provisioning ${opts.serverType ?? 'cx23'} VPS (hub from npm: @madarco/agentbox@${source.spec})…`
+      : `provisioning ${opts.serverType ?? 'cx23'} VPS (hub from source: ${source.repoUrl}@${source.repoRef})…`,
+  );
   const { server } = await withHetznerRetry(
     { method: 'createServer', retryOnAmbiguous: false, attemptTimeoutMs: 120_000 },
     () =>
@@ -372,7 +400,11 @@ export async function deployControlPlaneToHetzner(
         server_type: opts.serverType ?? 'cx23',
         image: opts.serverImage ?? 'ubuntu-24.04',
         location: opts.location ?? 'nbg1',
-        user_data: controlPlaneCloudInit({ sshPubkey: key.publicKey, repoUrl, repoRef }),
+        user_data: controlPlaneCloudInit({
+          sshPubkey: key.publicKey,
+          // Package mode needs no repo on the VPS at all.
+          ...(source.kind === 'source' ? { repo: { url: source.repoUrl, ref: source.repoRef } } : {}),
+        }),
         firewalls: [{ firewall: firewall.id }],
         labels: { 'agentbox.managed': 'true', 'agentbox.role': 'control-plane' },
         start_after_create: true,
@@ -404,22 +436,33 @@ export async function deployControlPlaneToHetzner(
   if (!(await waitForSsh(target, 5 * 60_000))) {
     throw new Error(`ssh never came up on ${ip}`);
   }
-  log('waiting for cloud-init (Docker + repo clone)…');
+  log(
+    source.kind === 'package'
+      ? 'waiting for cloud-init (Docker)…'
+      : 'waiting for cloud-init (Docker + repo clone)…',
+  );
   await sshExec(target, 'cloud-init status --wait || true', { timeoutMs: 12 * 60_000, onLine: log });
-  const cloned = await sshExec(target, `test -d ${REMOTE_APP_DIR}`);
-  if (cloned.exitCode !== 0) {
-    throw new Error('repo clone did not complete on the VPS (cloud-init failed)');
-  }
 
-  // Read the compose the VPS actually cloned. The host generates the Caddyfile
-  // and the `.env` around it, so anything version-dependent has to come from
-  // there rather than from this CLI's assumptions about `repoRef`.
-  const composeBody = await sshExec(target, `cat ${REMOTE_APP_DIR}/docker-compose.yml`);
-  const compose = composeBody.exitCode === 0 ? composeBody.stdout : '';
-  if (compose && !isFullHubCompose(compose)) {
-    throw new Error(
-      `the deployed ref (${repoRef}) predates the full-hub deploy — its apps/hub/docker-compose.yml ignores AGENTBOX_HUB_DATA_DIR, so this CLI's env and persistent-state wiring do not apply to it. Deploy a ref matching this CLI (omit --ref) or upgrade the CLI to match the ref.`,
-    );
+  // The compose the `app` service is built from. In package mode the host owns
+  // it (it travels with the deploy, below); in source mode it comes from the ref
+  // the VPS cloned, so anything version-dependent has to be read from THERE
+  // rather than assumed — the host only generates the Caddyfile and `.env`.
+  let compose: string;
+  if (deployAssets) {
+    await sshExec(target, `mkdir -p ${REMOTE_APP_DIR}`);
+    compose = await readFile(deployAssets['docker-compose.yml'], 'utf8');
+  } else {
+    const cloned = await sshExec(target, `test -d ${REMOTE_APP_DIR}`);
+    if (cloned.exitCode !== 0) {
+      throw new Error('repo clone did not complete on the VPS (cloud-init failed)');
+    }
+    const composeBody = await sshExec(target, `cat ${REMOTE_APP_DIR}/docker-compose.yml`);
+    compose = composeBody.exitCode === 0 ? composeBody.stdout : '';
+    if (compose && !isFullHubCompose(compose)) {
+      throw new Error(
+        `the deployed ref (${source.kind === 'source' ? source.repoRef : ''}) predates the full-hub deploy — its apps/hub/docker-compose.yml ignores AGENTBOX_HUB_DATA_DIR, so this CLI's env and persistent-state wiring do not apply to it. Deploy a ref matching this CLI (omit --ref) or upgrade the CLI to match the ref.`,
+      );
+    }
   }
   const appPort = hubContainerPort(compose) ?? HUB_CONTAINER_PORT;
   log(`hub listens on :${String(appPort)} in-container (from the deployed compose)`);
@@ -432,7 +475,10 @@ export async function deployControlPlaneToHetzner(
   const hubEnvExtra =
     `AGENTBOX_HUB_DATA_DIR=${REMOTE_DATA_DIR}\n` +
     `AGENTBOX_HUB_PUBLIC_URL=${url}\n` +
-    `AGENTBOX_HUB_ADMIN_CIDR=${hostCidr}\n`;
+    `AGENTBOX_HUB_ADMIN_CIDR=${hostCidr}\n` +
+    // Package mode only: the npm spec docker-compose.package.yml passes to the
+    // image build as a build-arg (`${AGENTBOX_SPEC:?}`).
+    (source.kind === 'package' ? `AGENTBOX_SPEC=${source.spec}\n` : '');
   const providerSecrets = await collectProviderSecrets();
   if (!providerSecrets) {
     log('warning: no provider credentials found in ~/.agentbox/secrets.env — the worker can only create boxes for providers whose creds you push later');
@@ -465,6 +511,13 @@ export async function deployControlPlaneToHetzner(
     await scpUpload(target, envLocal, `${REMOTE_APP_DIR}/.env`);
     await scpUpload(target, caddyLocal, `${REMOTE_APP_DIR}/Caddyfile`);
     await scpUpload(target, composeLocal, `${REMOTE_APP_DIR}/docker-compose.caddy.yml`);
+    if (deployAssets) {
+      // No repo on the VPS in package mode — the whole compose stack travels.
+      log('uploading the hub compose stack (package mode)…');
+      for (const [name, localPath] of Object.entries(deployAssets)) {
+        await scpUpload(target, localPath, `${REMOTE_APP_DIR}/${name}`);
+      }
+    }
     // Provider creds live in the data volume (read as ~/.agentbox/secrets.env),
     // NOT in the compose env — so they're never in `docker inspect`/compose logs.
     await scpUpload(target, secretsLocal, `${REMOTE_DATA_DIR}/secrets.env`);
@@ -494,10 +547,14 @@ export async function deployControlPlaneToHetzner(
     await rm(staging, { recursive: true, force: true });
   }
 
-  log('building + starting the control plane (docker compose up --build)…');
+  log(
+    source.kind === 'package'
+      ? 'installing + starting the control plane (docker compose up --build)…'
+      : 'building + starting the control plane (docker compose up --build)…',
+  );
   const up = await sshExec(
     target,
-    `cd ${REMOTE_APP_DIR} && docker compose -f docker-compose.yml -f docker-compose.caddy.yml up -d --build`,
+    `cd ${REMOTE_APP_DIR} && docker compose ${composeFileArgs(source)} up -d --build`,
     { timeoutMs: 25 * 60_000, onLine: log },
   );
   if (up.exitCode !== 0) {
@@ -505,7 +562,7 @@ export async function deployControlPlaneToHetzner(
   }
 
   log(`provisioned; waiting for HTTPS at ${url} …`);
-  await pollHealthz(url, 3 * 60_000, log, () => diagnoseUnhealthy(target, appPort));
+  await pollHealthz(url, 3 * 60_000, log, () => diagnoseUnhealthy(target, appPort, source));
 
   return provisioned;
 }

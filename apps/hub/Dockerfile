@@ -50,6 +50,9 @@ ENV AGENTBOX_CLI_ENTRY=/repo/apps/cli/dist/index.js
 # AGENTBOX_RUNTIME_ROOT at the staged tree makes the hub compute the same
 # fingerprint the CLI does, so shared bake records are recognized as baked.
 ENV AGENTBOX_RUNTIME_ROOT=/repo/apps/cli/runtime
+# resolveDockerBuild does NOT read AGENTBOX_RUNTIME_ROOT (only daytona's copy
+# does), so the docker provider needs its own pointer at the same staged tree.
+ENV AGENTBOX_DOCKER_CONTEXT=/repo/apps/cli/runtime/docker
 # The whole built monorepo: the standalone bundle ships no node_modules, so its
 # externals (next, react, pg, better-auth, the cloud SDKs) resolve from the
 # workspace node_modules present here. Not size-optimized; fine for a VPS.

@@ -6,6 +6,7 @@ import {
   syncAgentboxSshConfig,
   controlPlaneDeployPath,
   type ControlPlaneDeployRecord,
+  type HubDeploySource,
 } from '@agentbox/sandbox-core';
 import { deployControlPlaneToHetzner, readHetznerCredStatus } from '@agentbox/sandbox-hetzner';
 
@@ -17,10 +18,8 @@ import { deployControlPlaneToHetzner, readHetznerCredStatus } from '@agentbox/sa
 export interface HetznerDeployOptions {
   /** Path to the setup-written control-plane.env (scp'd to the VPS as `.env`). */
   envPath: string;
-  /** Branch / tag / sha of the agentbox repo to deploy (default `main`). */
-  repoRef?: string;
-  /** Git repo the VPS clones (default the public agentbox repo). */
-  repoUrl?: string;
+  /** Where the VPS gets the hub from — the npm package, or a cloned ref. */
+  source: HubDeploySource;
   log: (line: string) => void;
   /**
    * Fired once the VPS exists, before the build + healthz poll. Lets the caller
@@ -59,27 +58,37 @@ export async function runHetznerDeploy(opts: HetznerDeployOptions): Promise<{ ur
   const envContent = await readFile(opts.envPath, 'utf8');
   const result = await deployControlPlaneToHetzner({
     envContent,
-    repoRef: opts.repoRef,
-    repoUrl: opts.repoUrl,
+    source: opts.source,
     onLog: opts.log,
     onProvisioned: async (info) => {
-      const record: ControlPlaneDeployRecord = { provider: 'hetzner', ...info };
+      const record: ControlPlaneDeployRecord = {
+        provider: 'hetzner',
+        source: opts.source,
+        ...info,
+      };
       opts.onProvisioned?.(record);
       await persistDeployRecord(record);
     },
   });
-  await persistDeployRecord({ provider: 'hetzner', ...result });
+  await persistDeployRecord({ provider: 'hetzner', source: opts.source, ...result });
   return { url: result.url };
 }
 
 /** Human-readable recovery steps for a deploy that provisioned but never went healthy. */
 export function recoveryHint(record: ControlPlaneDeployRecord): string[] {
   const key = record.sshKeyDir ? join(record.sshKeyDir, 'id_ed25519') : undefined;
+  // Must match the `-f` list the deploy used: compose keys the project off it, so
+  // a pasted command with the wrong list reports "no such service".
+  const files = [
+    '-f docker-compose.yml',
+    ...(record.source?.kind === 'package' ? ['-f docker-compose.package.yml'] : []),
+    '-f docker-compose.caddy.yml',
+  ].join(' ');
   return [
     `The VPS is still running (server ${String(record.serverId ?? '?')}, ${record.ip ?? '?'}) — inspect it:`,
     `  ssh agentbox-hub`,
     ...(key ? [`  (or: ssh -i ${key} root@${record.ip ?? '?'})`] : []),
-    `  cd /opt/agentbox/apps/hub && docker compose -f docker-compose.yml -f docker-compose.caddy.yml logs --tail=200 app`,
+    `  cd /opt/agentbox/apps/hub && docker compose ${files} logs --tail=200 app`,
     `SSH is firewalled to this machine's egress IP, so run it from here.`,
     `Retry the deploy with \`agentbox hub deploy hetzner\` (reuses the same GitHub App).`,
   ];

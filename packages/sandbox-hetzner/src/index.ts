@@ -66,6 +66,13 @@ export {
   type ControlPlaneHetznerDeployResult,
 } from './control-plane-deploy.js';
 export {
+  HUB_DEPLOY_ASSETS,
+  findStagedHubDeployRoot,
+  hubDeployCandidates,
+  resolveHubDeployAssets,
+  type HubDeployAsset,
+} from './hub-deploy-assets.js';
+export {
   RUNTIME_ASSETS,
   candidatesFor,
   resolveRuntimeAssets,

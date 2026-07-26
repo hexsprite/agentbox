@@ -33,6 +33,7 @@ export {
   parseSshTarget,
   readAgentboxSshAlias,
   type ControlPlaneDeployRecord,
+  type HubDeploySource,
   type SshAliasOptions,
   type SshTarget,
 } from './ssh-config.js';

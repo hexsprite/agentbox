@@ -183,6 +183,26 @@ export async function ensureSshInclude(): Promise<void> {
 }
 
 /**
+ * Where a control-box deploy gets the hub from.
+ *
+ * `package` (the default) installs the published `@madarco/agentbox` on the VPS
+ * and runs the standalone hub it already ships at `runtime/hub/apps/hub/server.js`
+ * — the same bundle `agentbox hub` spawns locally. The control box and the PC
+ * that deployed it then run the identical published build by construction, which
+ * also makes their base-image fingerprints match byte-for-byte.
+ *
+ * `source` clones the monorepo onto the VPS and builds it there. The escape hatch
+ * for deploying unreleased code, and what a dev build (no published version to
+ * install) falls back to.
+ *
+ * Lives here, next to the record that carries it, so the deploy record stays a
+ * plain sandbox-core type — provider packages depend on this one, not the reverse.
+ */
+export type HubDeploySource =
+  | { kind: 'package'; spec: string }
+  | { kind: 'source'; repoUrl: string; repoRef: string };
+
+/**
  * The record `agentbox hub deploy` persists to `deploy.json`. Every field is
  * optional because it is also written mid-deploy (before the hub is healthy)
  * and read back by later commands that must tolerate an older/partial file.
@@ -197,6 +217,12 @@ export interface ControlPlaneDeployRecord {
   firewallId?: number;
   /** Holds `id_ed25519` (+ `.pub`, `known_hosts`) — the only key that VPS trusts. */
   sshKeyDir?: string;
+  /**
+   * What was deployed. Nothing else records the running build — the VPS keeps no
+   * version marker, and in package mode there is not even a git checkout to
+   * `rev-parse` — so without this a control box is unattributable after the fact.
+   */
+  source?: HubDeploySource;
 }
 
 /**
