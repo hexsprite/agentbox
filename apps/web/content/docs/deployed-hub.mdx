@@ -33,6 +33,33 @@ When it finishes, open `https://<ip>.sslip.io`, sign in with those credentials, 
 
 The deploy also mints a headless **API key** (`AGENTBOX_HUB_API_KEY`) and records it alongside the other deploy secrets in `~/.agentbox/control-plane/control-plane.env` (mode `0600`). It's the `Authorization: Bearer` credential for the hub's public [REST API](/docs/api) on the control box — so scripts and the menu-bar app can call `/api/v1` on the deployed hub without a browser login. It gates only `/api/v1`, never the web UI (that still needs your admin password).
 
+### Which build the control box runs
+
+The VPS installs **`@madarco/agentbox` from npm, pinned to your CLI's exact version**, and runs the hub that package already ships — the same one `agentbox hub` starts on your laptop. So the control box and the machine that deployed it always run the identical published build, and there's nothing to keep in sync.
+
+That matters beyond deploy speed: a shared **base-image bake record** is only adopted when the two sides compute the same build fingerprint, and pinning the version makes them match by construction (see the snapshot note below).
+
+`agentbox hub status` shows what a control box is running:
+
+```bash
+agentbox hub status
+# hub: remote (reachable)
+#   url:    https://<ip>.sslip.io
+#   build:  @madarco/agentbox@0.28.0 (npm)
+```
+
+To deploy **unreleased** code instead — a feature branch you want to verify live — pass `--ref`, and the VPS clones and builds the monorepo the way it used to:
+
+```bash
+agentbox hub deploy hetzner --ref my-feature-branch     # build from source
+agentbox hub deploy hetzner --repo me/agentbox-fork     # a fork (implies --ref)
+agentbox hub deploy hetzner --package nightly           # a different npm spec
+```
+
+A CLI you built yourself from the monorepo has no published version to install, so it falls back to building `nightly` automatically.
+
+<Callout type="warn" title="Building from source pins you to that ref">The deploy is a two-sided contract: with `--ref`, the VPS builds `apps/hub` from the cloned ref while your CLI generates the Caddy config and `.env` that wrap it, and they only line up when both come from the same code. Pin an **older** ref and the deploy stops before building, with an error naming `--ref`. The default (npm) has no such failure mode — the version is the contract.</Callout>
+
 ### How the control box reaches GitHub
 
 Two modes, set by [`hub.gitAuth`](/docs/configuration) or `agentbox hub setup --git-auth`:
@@ -75,15 +102,15 @@ Most failures land after the VPS is up, so the logs you want are on the machine 
 ```bash
 ssh agentbox-hub
 cd /opt/agentbox/apps/hub
-docker compose -f docker-compose.yml -f docker-compose.caddy.yml ps
-docker compose -f docker-compose.yml -f docker-compose.caddy.yml logs --tail=200 app
+docker compose -f docker-compose.yml -f docker-compose.package.yml -f docker-compose.caddy.yml ps
+docker compose -f docker-compose.yml -f docker-compose.package.yml -f docker-compose.caddy.yml logs --tail=200 app
 ```
 
-A **502** at `https://<ip>.sslip.io/healthz` means Caddy and the certificate are fine but the hub container isn't answering on `:8787` — check `logs app` above. A **certificate or connection** error instead means Caddy never came up. `cloud-init status --long` and `/var/log/cloud-init-output.log` cover the earlier phase (Docker install + repo clone).
+(Drop `-f docker-compose.package.yml` if you deployed with `--ref` — the failure message prints the right command for your deploy either way. Compose keys the project off that file list, so a mismatched one reports "no such service".)
+
+A **502** at `https://<ip>.sslip.io/healthz` means Caddy and the certificate are fine but the hub container isn't answering on `:8787` — check `logs app` above. A **certificate or connection** error instead means Caddy never came up. `cloud-init status --long` and `/var/log/cloud-init-output.log` cover the earlier phase (the Docker install).
 
 Retry with `agentbox hub deploy hetzner` — it reuses the GitHub App and env from the first run, so there's no need to run `hub setup` again. The failed VPS and its firewall are still billing; delete them from the [Hetzner console](https://console.hetzner.cloud) (they're labeled `agentbox.role=control-plane`).
-
-<Callout type="warn" title="Don't pin --ref to an older version">The deploy is a two-sided contract: the VPS builds `apps/hub` from the cloned ref, while your CLI generates the Caddy config and `.env` that wrap it. They only line up when both come from the same code, so `--ref` defaults to the ref matching your CLI — its `v<version>` tag on a release, `nightly` on a nightly build. Pin an older ref and the deploy stops before building, with an error naming `--ref`. Pass one only to deploy a **newer** branch (a feature branch you want to verify live).</Callout>
 
 ## Configure cloud providers on the control box
 
@@ -97,7 +124,7 @@ The control box's resident worker provisions boxes with **your provider credenti
 
 <Callout type="warn" title="Vercel needs a real token">Vercel has two auth modes. A **CLI login** (`agentbox vercel login` interactively) keeps the access token in the Vercel CLI's own store, **not** in `secrets.env` — so it can't travel to a headless server. For the control box, give Vercel a real **access token**: either set a `VERCEL_TOKEN` (+ team/project) in your host `secrets.env` before deploying, or paste one into the control box's **Settings** form. Token-based providers (DigitalOcean, E2B, Hetzner, Daytona) travel automatically.</Callout>
 
-<Callout type="info" title="Daytona / E2B / Hetzner need a base snapshot">Providers that boot from a baked base (e2b template, hetzner snapshot, daytona snapshot) read a `~/.agentbox/<provider>-prepared.json` to know the base id. The deploy **shares your local bake records** with the control box, and it adopts one automatically **when its build context matches** the control box's version — so a matching deploy needs no re-bake. A record baked with either [`box.claudeInstall`](/docs/configuration#box) mode is accepted, and the deploy carries your `box.claudeInstall` setting over so a bake the control box runs itself uses the same mode (`npm` matters there: the native installer's CDN sometimes 403s datacenter IPs). If the control box runs a *different* AgentBox version than the one you baked with, the fingerprints differ and the shared record is (correctly) ignored; a create from the CLI then fails with "run `agentbox prepare` first". Bake from the control box's own **Settings** page to fix that — or create the first box from the web UI, which bakes for you. You can also copy a record up: `scp ~/.agentbox/daytona-prepared.json agentbox-hub:/opt/agentbox/hub-data/`.</Callout>
+<Callout type="info" title="Daytona / E2B / Hetzner need a base snapshot">Providers that boot from a baked base (e2b template, hetzner snapshot, daytona snapshot) read a `~/.agentbox/<provider>-prepared.json` to know the base id. The deploy **shares your local bake records** with the control box, and it adopts one automatically **when its build context matches** the control box's version — so a matching deploy needs no re-bake. A record baked with either [`box.claudeInstall`](/docs/configuration#box) mode is accepted, and the deploy carries your `box.claudeInstall` setting over so a bake the control box runs itself uses the same mode (`npm` matters there: the native installer's CDN sometimes 403s datacenter IPs). Because the control box installs the **same npm version** your CLI runs, a matching fingerprint is now the normal case. It can still differ if you deployed with `--ref`/`--package`, or baked with an older CLI and haven't redeployed since; the shared record is then (correctly) ignored and a create from the CLI fails with "run `agentbox prepare` first". Bake from the control box's own **Settings** page to fix that — or create the first box from the web UI, which bakes for you. You can also copy a record up: `scp ~/.agentbox/daytona-prepared.json agentbox-hub:/opt/agentbox/hub-data/`.</Callout>
 
 ## What runs where — and what the control box can drive
 

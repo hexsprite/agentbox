@@ -1148,6 +1148,28 @@ Findings and follow-ups discovered while implementing, kept out of the phase the
   **Still open:** no teardown command — a failed deploy's server + firewall keep billing and must be
   deleted from the Hetzner console (labeled `agentbox.role=control-plane`).
 
+- **(2026-07-26) The control box now installs the hub from npm; `--ref` is the source fallback.**
+  The deploy used to clone the monorepo onto the VPS and build 14 workspace packages plus the CLI
+  there (~2m40s of a ~4m45s deploy) to produce an artifact the **published package already ships**:
+  `runtime/hub/apps/hub/server.js`, the same standalone bundle `agentbox hub` spawns locally
+  (`resolveHubServer`, staged by `stage-runtime.mjs`). It now runs
+  `npm i -g @madarco/agentbox@<the deploying CLI's exact version>` in a small `node:22-slim` image
+  (`apps/hub/Dockerfile.package`) and the host ships the compose stack: `apps/hub/docker-compose.yml`
+  **verbatim** (so the service's env/volumes block has one definition and cannot drift) plus
+  `docker-compose.package.yml`, an override that replaces only the `build:` block. Cloud-init no
+  longer clones anything.
+  Consequences worth remembering: (a) the version-skew class of bug directly above becomes
+  structurally impossible in the default mode — the version *is* the contract, not a branch name;
+  (b) **base-image fingerprints now match by construction**, since the control box's `runtime/` tree
+  is literally the same npm tarball the PC installed, rather than a ref that happens to correspond
+  (`AGENTBOX_RUNTIME_ROOT` still has to be set, and `AGENTBOX_CLI_RUNTIME_DIR` too — a container
+  has no parent CLI process to inherit it from, unlike a locally spawned hub); (c) `NODE_ENV=production`
+  is load-bearing in the image — without it Next takes the dev path and dies with "Couldn't find any
+  `pages` or `app` directory". `--ref`/`--repo` keep the clone-and-build path (a dev CLI, whose
+  version was never published, falls back to it automatically), `--package <spec>` pins a different
+  npm spec, and `deploy.json` finally records which build a control box is running (`hub status`
+  shows it) — nothing else on the host or the VPS did.
+
 - **(2026-07-25) `DEFAULT_DEPLOY_REF = 'main'` was silently deploying the wrong hub — fixed.** The
   live 502 above had nothing to do with the VPS: the host CLI (nightly) wrote
   `reverse_proxy app:8787` and a full-hub `.env`, while the VPS cloned `main` (v0.27.1), whose
