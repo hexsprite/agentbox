@@ -112,7 +112,7 @@ A **502** at `https://<ip>.sslip.io/healthz` means Caddy and the certificate are
 
 When the deploy fails the health check it now ssh's in and names the cause, distinguishing "the hub is down", "the hub is up but Caddy can't reach it", and "the hub is up but there's no certificate".
 
-<Callout type="warn" title="\"too many certificates already issued\"">An sslip.io hostname is derived from the IP, so it isn't really yours — and Hetzner reuses released addresses. Land on one that already had five certificates issued this week and Let's Encrypt refuses (rate limits are per exact hostname, and reset after 7 days), leaving a perfectly healthy hub with no working HTTPS. Destroy the VPS and deploy again to draw a different address, or pass `--domain <host>` with a name you control and point its DNS at the VPS first.</Callout>
+<Callout type="warn" title="“too many certificates already issued”">An sslip.io hostname is derived from the IP, so it isn't really yours — and Hetzner reuses released addresses. Land on one that already had five certificates issued this week and Let's Encrypt refuses (rate limits are per exact hostname, and reset after 7 days), leaving a perfectly healthy hub with no working HTTPS. Destroy the VPS and deploy again to draw a different address, or pass `--domain <host>` with a name you control and point its DNS at the VPS first.</Callout>
 
 Retry with `agentbox hub deploy hetzner` — it reuses the GitHub App and env from the first run, so there's no need to run `hub setup` again. The failed VPS and its firewall are still billing; delete them from the [Hetzner console](https://console.hetzner.cloud) (they're labeled `agentbox.role=control-plane`).
 
