@@ -156,6 +156,14 @@ const spritesFiles = [
 for (const [srcRel, destRel, exec] of spritesFiles) {
   copy(srcRel, join(spritesCtx, destRel), exec);
 }
+// The interactive-attach PTY bridge. Unlike the assets above it never enters a
+// box — it runs on the HOST, spawned by `buildSpritesAttach`, and proxies
+// stdin/stdout/SIGWINCH to a correctly sized in-box PTY over the SDK.
+copy(
+  'packages/sandbox-sprites/dist/attach-helper.cjs',
+  join(spritesCtx, 'attach-helper.cjs'),
+  false,
+);
 
 // _shared — provider-NEUTRAL box-side runtime assets exposed to external
 // provider plugins via `@madarco/agentbox-provider-sdk`'s `resolveSharedRuntimeAsset`.

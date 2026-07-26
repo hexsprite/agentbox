@@ -130,7 +130,7 @@ Pausing still works, and is free — see above. For checkpoint-backed workflows 
 
 ## Attach and terminals
 
-`agentbox claude` / `codex` / `opencode` / `shell` all work normally. Attach goes through `sprite exec --tty`, dropping straight into your box's `vscode` session — so tmux, scrollback and resize behave as they do everywhere else. See [access-your-box](/docs/access-your-box).
+`agentbox claude` / `codex` / `opencode` / `shell` all work normally. Attach drops straight into your box's `vscode` session, so tmux, scrollback and resize behave as they do everywhere else — including resizing the window mid-session. See [access-your-box](/docs/access-your-box).
 
 Sprites boxes are not reachable over plain SSH, so the sshfs mount and VS Code Remote-SSH paths described in [access-your-box](/docs/access-your-box) don't apply here.
 

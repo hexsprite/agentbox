@@ -2,7 +2,7 @@
   "name": "@agentbox/sandbox-sprites",
   "version": "0.0.0",
   "private": true,
-  "description": "Fly.io Sprites provider — CloudBackend over the @fly/sprites SDK (Firecracker microVMs, scale-to-zero, per-box base install)",
+  "description": "Fly.io Sprites provider \u2014 CloudBackend over the @fly/sprites SDK (Firecracker microVMs, scale-to-zero, per-box base install)",
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",
@@ -35,10 +35,12 @@
     "@agentbox/sandbox-core": "workspace:*",
     "@clack/prompts": "^0.9.0",
     "@fly/sprites": "^0.1.0",
-    "commander": "^12.1.0"
+    "commander": "^12.1.0",
+    "ws": "^8.18.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.1",
+    "@types/ws": "^8.5.13",
     "tsup": "^8.3.5",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"

@@ -278,7 +278,7 @@ All seven are fixed with regression tests; see the `fix(sprites):` commits.
    `backend.destroy`, so a failed poll in that window drove `recoverPreviewUrl`
    into minting a tunnel for a sprite that no longer existed.
 
-### Why attach uses `sprite exec --tty`, not `sprite console`
+### Why attach uses an SDK PTY bridge
 
 The first implementation used `sprite console` plus `AttachSpec.initialInput` —
 the daytona trick, where the inner command is typed at the prompt because the
@@ -287,8 +287,38 @@ after the remote's first byte, and `sprite console` emits terminal capability
 queries immediately, well before `bash --login` is ready. The line was swallowed
 every time and no tmux session was created.
 
-`sprite exec --tty -- sudo -u vscode bash -lc '<inner>'` puts the command in
-argv. No race, no staged script, and one shape for every attach kind.
+`sprite exec --tty -- sudo -u vscode bash -lc '<inner>'` fixed that — the
+command travels in argv, so there is no race to lose — and it is still what
+detached pre-starts and `logs` use.
+
+But interactive attach needed one more step. `sprite exec --tty` allocates a
+remote PTY and then never negotiates the terminal size or forwards SIGWINCH:
+tmux reported `pane=90x49` regardless of the real terminal. Absolute cursor
+moves landed on the wrong rows, the status band was drawn twice, and the screen
+filled with escape fragments that had lost their `ESC[` prefix. The CLI has no
+size flag. So interactive attach goes through `src/attach-helper.cjs`, which
+uses the SDK's `spawn({ tty, cols, rows })` + `SpriteCommand.resize()` — the
+same shape and the same reason as sandbox-e2b's helper. Verified: host 143
+columns produced `pane=143x46` (one row for the band), band drawn once.
+
+Two things that helper has to get right, both found live:
+
+- **It replaces the global `WebSocket` with `ws`.** The SDK opens its exec
+  socket as `new WebSocket(url, { headers: { Authorization: ... } })`, and
+  Node's built-in WebSocket silently ignores an options object — the token
+  never reaches the server, the handshake dies with a bare 1006, and the attach
+  hangs on a blank screen with no error at all. Measured directly against
+  api.sprites.dev: built-in gave 1006, `ws` got past auth. Token-in-query and
+  subprotocol auth are both rejected by the server. Upstream bug in
+  `@fly/sprites@0.1.0`, worth reporting.
+- **It queues stdin and resizes until the socket opens.** The AgentBox wrapper
+  resizes the pty immediately to lay out its status band, and anything touching
+  the socket before `spawn` throws "WebSocket not open", which the SDK turns
+  into an `error` that kills the attach.
+
+Also note `spawn()` starts the command itself; calling `start()` again throws
+"Command already started", and a failed connect emits `error` while `wait()`
+never settles — so the helper races the two.
 
 Two notes for whoever debugs this next:
 

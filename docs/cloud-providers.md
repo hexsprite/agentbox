@@ -953,10 +953,17 @@ org means flipping the sprite to `auth: 'public'`, which stays the user's call.
   `/tmp` is sticky, so a `vscode` consumer could read an uploaded file but not
   delete it — which broke agent-credential seeding until `uploadFile` started
   handing ownership over.
-- **`buildAttach` is overridden.** The shared builder appends an SSH-shaped
-  `-t '<cmd>'`; the `sprite` CLI spells the same thing as `exec --tty -- <argv>`.
-  Every kind uses one shape — `sprite exec [--tty] -- sudo -u vscode bash -lc
-  '<inner>'` — with `--tty` only for interactive sessions.
+- **`buildAttach` is overridden**, and splits by kind. Detached pre-starts and
+  `logs` run `sprite exec -- sudo -u vscode bash -lc '<inner>'`: they run a
+  command and exit, with no terminal to size. Interactive attach goes through
+  `attach-helper.cjs`, an SDK PTY bridge, because `sprite exec --tty` allocates
+  a remote PTY but never negotiates the terminal size or forwards SIGWINCH —
+  tmux rendered at a fixed 90x49 whatever the real terminal was, so the display
+  filled with mispositioned text and escape fragments stripped of their `ESC[`.
+  The CLI has no size flag; the SDK has `spawn({tty, cols, rows})` + `resize()`.
+  The helper also swaps in `ws` for the global WebSocket — the SDK passes an
+  auth `headers` option that Node's built-in implementation silently drops, so
+  the handshake 1006s and the attach hangs blank. See `sprites-backlog.md`.
 
   It deliberately does NOT use `sprite console` plus `AttachSpec.initialInput`
   (the daytona trick of typing the command at the prompt). That was the first
