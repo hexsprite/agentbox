@@ -326,42 +326,85 @@ async function pollHealthz(
 }
 
 /**
- * Read a failing healthz back to the user as one of three distinct causes. The
- * hub answering on the VPS's own port but not through HTTPS used to be reported
- * as a single "Caddy can't reach it → wrong upstream port" guess, which is wrong
- * whenever the certificate is the problem — and it routinely is: sslip.io names
- * are derived from the IP, so a recycled Hetzner address can arrive already at
- * Let's Encrypt's per-identifier rate limit, through no fault of the deploy.
+ * Explain a failing healthz when the hub itself is fine, from what an HTTPS
+ * request made ON the VPS returned. `curl -w '%{http_code}'` prints `000` when it
+ * never got a response at all, which is the decisive signal:
+ *
+ *   - `200`   — certificate AND upstream both work locally, so the break is
+ *               between this machine and the domain (DNS, or the :443 rule).
+ *   - `000`   — the TLS handshake never completed: no usable certificate.
+ *   - other   — Caddy answered, so TLS is fine and the reverse-proxy upstream is wrong.
+ *
+ * Deliberately NOT inferred from Caddy's log text: `tls.obtain` and `certificate`
+ * appear in its SUCCESS lines too ("obtaining certificate", "lock acquired",
+ * "served key authentication certificate"), so a healthy certificate plus a real
+ * upstream mismatch would be reported as a certificate problem. The log is only
+ * read for the rate-limit *detail*, which has an unambiguous error signature.
+ *
+ * Pure — the ssh calls happen in `diagnoseUnhealthy`, so this stays unit-testable.
+ */
+export function describeCaddyHop(
+  httpCode: string,
+  caddyLog: string,
+  appPort: number,
+  domain: string,
+): string {
+  const code = httpCode.trim();
+  const healthy = 'the hub IS healthy on the VPS (127.0.0.1:8787 answered)';
+  if (code === '200') {
+    return (
+      `${healthy}, and so is Caddy — an HTTPS request made ON the VPS returned 200. ` +
+      `The break is between this machine and ${domain}: check that the name resolves to the VPS ` +
+      `and that the firewall still allows :443.`
+    );
+  }
+  if (code !== '000' && /^\d{3}$/.test(code)) {
+    return (
+      `${healthy} and its certificate works, but Caddy answered ${code} — ` +
+      `its upstream (app:${String(appPort)}) does not match what the container listens on. ` +
+      `Check \`docker compose ps\` on the VPS and redeploy with a ref matching this CLI.`
+    );
+  }
+  // No HTTP response at all → the TLS handshake never completed → no certificate.
+  const rateLimited = /rateLimited/.test(caddyLog);
+  return (
+    `${healthy} — the HTTPS certificate is the problem, not the hub.\n` +
+    (rateLimited
+      ? `Let's Encrypt is rate-limiting this exact hostname (sslip.io derives it from the IP, and this address has hit the 5-certs-per-week cap — likely a recycled IP). Destroy this VPS and deploy again to get a different IP, or pass --domain with a name you control.\n`
+      : `Caddy has no usable certificate yet. Check that :80 and :443 are reachable from the internet.\n`) +
+    `--- caddy (cert lines) ---\n${caddyLog.trim()}`
+  );
+}
+
+/**
+ * Read a failing healthz back to the user as a specific cause. The hub answering
+ * on the VPS's own port but not through HTTPS used to be reported as a single
+ * "Caddy can't reach it → wrong upstream port" guess, which is wrong whenever the
+ * certificate is the problem — and it routinely is: sslip.io names are derived
+ * from the IP, so a recycled Hetzner address can arrive already at Let's Encrypt's
+ * per-identifier rate limit, through no fault of the deploy.
  */
 async function diagnoseUnhealthy(
   target: SshTargetArgs,
   appPort: number,
   source: HubDeploySource,
+  domain: string,
 ): Promise<string> {
   const files = composeFileArgs(source);
   const local = await sshExec(target, `curl -fsS -m 5 http://127.0.0.1:8787/healthz`);
   if (local.exitCode === 0) {
-    // The hub is fine — so this is Caddy's hop, either TLS or the upstream.
+    // The hub is fine, so the failure is Caddy's hop. Ask the VPS itself rather
+    // than guessing from logs: --resolve pins the name to loopback, so this
+    // exercises the real certificate and the real reverse_proxy upstream.
+    const probe = await sshExec(
+      target,
+      `curl -sk -o /dev/null -w '%{http_code}' -m 10 --resolve ${domain}:443:127.0.0.1 https://${domain}/healthz || true`,
+    );
     const caddy = await sshExec(
       target,
-      `cd ${REMOTE_APP_DIR} && docker compose ${files} logs --tail=200 caddy 2>&1 | grep -E 'tls.obtain|certificate|rateLimited' | tail -8`,
+      `cd ${REMOTE_APP_DIR} && docker compose ${files} logs --tail=200 caddy 2>&1 | grep -E 'tls\\.obtain|certificate|rateLimited' | tail -8`,
     );
-    const certTrouble = /could not get certificate|rateLimited|tls\.obtain/.test(caddy.stdout);
-    if (certTrouble) {
-      const rateLimited = /rateLimited/.test(caddy.stdout);
-      return (
-        `the hub IS healthy on the VPS (127.0.0.1:8787 answered) — the HTTPS certificate is the problem, not the hub.\n` +
-        (rateLimited
-          ? `Let's Encrypt is rate-limiting this exact hostname (sslip.io derives it from the IP, and this address has hit the 5-certs-per-week cap — likely a recycled IP). Destroy this VPS and deploy again to get a different IP, or pass --domain with a name you control.\n`
-          : `Caddy could not obtain a certificate. Check that :80 and :443 are reachable from the internet.\n`) +
-        `--- caddy (cert lines) ---\n${caddy.stdout.trim()}`
-      );
-    }
-    return (
-      `the hub IS healthy on the VPS (127.0.0.1:8787 answered) — Caddy cannot reach it, ` +
-      `so its upstream port (app:${String(appPort)}) does not match what the container listens on. ` +
-      `Check \`docker compose ps\` on the VPS and redeploy with a ref matching this CLI.`
-    );
+    return describeCaddyHop(probe.stdout, caddy.stdout, appPort, domain);
   }
   const ps = await sshExec(target, `cd ${REMOTE_APP_DIR} && docker compose ${files} ps`);
   const logs = await sshExec(
@@ -582,7 +625,9 @@ export async function deployControlPlaneToHetzner(
   }
 
   log(`provisioned; waiting for HTTPS at ${url} …`);
-  await pollHealthz(url, 3 * 60_000, log, () => diagnoseUnhealthy(target, appPort, source));
+  await pollHealthz(url, 3 * 60_000, log, () =>
+    diagnoseUnhealthy(target, appPort, source, domain),
+  );
 
   return provisioned;
 }

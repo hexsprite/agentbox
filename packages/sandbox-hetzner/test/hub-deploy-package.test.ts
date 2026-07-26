@@ -5,7 +5,11 @@ import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { controlPlaneCloudInit } from '../src/cloud-init.js';
-import { hubContainerPort, isFullHubCompose } from '../src/control-plane-deploy.js';
+import {
+  describeCaddyHop,
+  hubContainerPort,
+  isFullHubCompose,
+} from '../src/control-plane-deploy.js';
 import {
   HUB_DEPLOY_ASSETS,
   hubDeployCandidates,
@@ -137,5 +141,60 @@ describe('stage-runtime layout', () => {
     for (const asset of HUB_DEPLOY_ASSETS) writeFileSync(join(hubDeploy, asset), 'x');
     const resolved = resolveHubDeployAssets({ stagedRoot: hubDeploy, repoRoot: REPO_ROOT });
     expect(Object.keys(resolved).sort()).toEqual([...HUB_DEPLOY_ASSETS].sort());
+  });
+});
+
+/**
+ * A failing HTTPS healthz has three very different causes, and the deploy used to
+ * report them all as "Caddy can't reach it → wrong upstream port". The verdict now
+ * comes from an HTTPS request made ON the VPS, NOT from matching Caddy's log text:
+ * `tls.obtain` and `certificate` appear in its success lines too, so log-sniffing
+ * reported a healthy certificate plus a real upstream mismatch as a cert problem.
+ */
+describe('describeCaddyHop', () => {
+  // Caddy logs these while SUCCEEDING — the exact strings that made the old
+  // substring check fire on a perfectly good certificate.
+  const HAPPY_CADDY_LOG = [
+    '{"level":"info","logger":"tls.obtain","msg":"obtaining certificate","identifier":"h.example"}',
+    '{"level":"info","logger":"tls.obtain","msg":"lock acquired","identifier":"h.example"}',
+    '{"level":"info","logger":"tls","msg":"served key authentication certificate"}',
+    '{"level":"info","logger":"tls.obtain","msg":"certificate obtained successfully"}',
+  ].join('\n');
+
+  const RATE_LIMITED_LOG =
+    '{"level":"error","logger":"tls.obtain","msg":"could not get certificate from issuer","error":"HTTP 429 urn:ietf:params:acme:error:rateLimited - too many certificates (5)"}';
+
+  it('blames the upstream port on a 502, even when the log is full of tls.obtain', () => {
+    const out = describeCaddyHop('502', HAPPY_CADDY_LOG, 8787, 'h.example');
+    expect(out).toContain('Caddy answered 502');
+    expect(out).toContain('app:8787');
+    expect(out).not.toContain('certificate is the problem');
+  });
+
+  it('blames the certificate only when there was no HTTP response at all', () => {
+    const out = describeCaddyHop('000', RATE_LIMITED_LOG, 8787, 'h.example');
+    expect(out).toContain('certificate is the problem');
+    expect(out).toContain('rate-limiting this exact hostname');
+  });
+
+  it('names a missing certificate without inventing a rate limit', () => {
+    const out = describeCaddyHop('000', HAPPY_CADDY_LOG, 8787, 'h.example');
+    expect(out).toContain('certificate is the problem');
+    expect(out).toContain('no usable certificate');
+    expect(out).not.toContain('rate-limiting');
+  });
+
+  it('points outward when the VPS itself serves 200 (DNS / firewall, not the box)', () => {
+    const out = describeCaddyHop('200', HAPPY_CADDY_LOG, 8787, 'h.example');
+    expect(out).toContain('returned 200');
+    expect(out).toContain('h.example');
+    expect(out).not.toContain('certificate is the problem');
+    expect(out).not.toContain('does not match');
+  });
+
+  it('tolerates a curl code with trailing whitespace', () => {
+    expect(describeCaddyHop(' 200 \n', HAPPY_CADDY_LOG, 8787, 'h.example')).toContain(
+      'returned 200',
+    );
   });
 });
