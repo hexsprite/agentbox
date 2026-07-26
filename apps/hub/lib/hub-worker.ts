@@ -196,17 +196,30 @@ export function makeHubCreateBox(opts: HubWorkerOptions): CreateBoxFn {
     };
   }
 
-  const appCfg = loadGitHubAppConfig();
-  if (!appCfg) throw new Error('no GitHub App configured (AGENTBOX_GITHUB_APP_* / control-plane.env)');
-  const leaser = new GitHubAppLeaser(appCfg);
   const extraInboundCidrs = opts.adminCidr ? [opts.adminCidr] : undefined;
 
   return makeControlPlaneCreateBox({
+    /**
+     * Resolve a clone URL the worker can authenticate with.
+     *
+     * Resolved PER JOB, not at construction. This used to `throw` here when no
+     * GitHub App was configured — but `startHubWorker` builds this eagerly at
+     * boot, so a hub without an App died before it could serve the UI you'd use
+     * to configure one. In `hub.gitAuth=gh` mode that's the normal day-one
+     * state. Now a missing credential fails one job with an actionable message
+     * and the queue keeps draining.
+     *
+     * With no App, hand back the bare URL: the hub authenticates via git's
+     * credential helper (`gh auth setup-git` + `GH_TOKEN`), the same way it
+     * authenticates the pushes it makes on a box's behalf.
+     */
     leaseRemoteUrl: async (repoUrl) => {
+      const appCfg = loadGitHubAppConfig();
+      if (!appCfg) return repoUrl;
       const { path } = parseGitRemote(repoUrl);
       const [owner, repo] = path.replace(/\.git$/, '').split('/');
       if (!owner || !repo) throw new Error(`cannot derive owner/repo from ${repoUrl}`);
-      const { token } = await leaser.leaseRepoToken(owner, repo);
+      const { token } = await new GitHubAppLeaser(appCfg).leaseRepoToken(owner, repo);
       return toAuthedHttpsUrl(repoUrl, token);
     },
     cloneRepo: (authedUrl, repoUrl, dest, branch) =>

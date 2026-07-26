@@ -15,6 +15,7 @@
  */
 
 import { execa } from 'execa';
+import { existsSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -106,6 +107,18 @@ export interface CloudActionExecutorDeps {
    * treated as enabled so callers that don't know the flag stay relaxed.
    */
   autoApproveSafeHostActions?: boolean;
+  /**
+   * The box's REGISTERED origin URL (`BoxRegistration.originUrl`), used only
+   * when this host has no working checkout for the box and `runGitRpc` has to
+   * push from a scratch repo (the control-box case — the create worker's clone
+   * is a temp dir it deletes).
+   *
+   * It must come from the registration, never from the box: the box could
+   * rewrite its own `origin`, and pushing to an attacker-chosen URL with the
+   * host's credential helper attached would hand over the token. Same invariant
+   * the lease path states in `lease.ts`.
+   */
+  originUrl?: string;
   /** Best-effort logger. */
   log?: (line: string) => void;
 }
@@ -1099,6 +1112,59 @@ async function runDownloadRpc(
  * sandbox fetches from the bundle, in-box `agentbox-ctl git pull` then
  * does its local merge as today.
  */
+/**
+ * Where the host runs its half of a git RPC, and what it pushes to.
+ *
+ * On a laptop this is the user's real checkout: `dir` is the working copy and
+ * `remote` is whatever `origin` resolves to there. On a **control box** there is
+ * no checkout at all — the create worker clones into a temp dir and deletes it
+ * in a `finally` — so `dir` is a throwaway repo we initialize per call and
+ * `remote` is the registered origin URL.
+ *
+ * A scratch repo is enough because `git bundle create <file> <branch>` is
+ * self-contained: it carries the branch's full history with no prerequisites, so
+ * unbundling into an empty repo yields a pushable ref. Nothing needs to persist
+ * between pushes, which is why the hub keeps no per-project clones.
+ */
+export interface HostGitRepo {
+  dir: string;
+  /** Explicit push target — a URL for scratch repos, else the caller's remote name. */
+  remote: string;
+  scratch: boolean;
+  cleanup: () => Promise<void>;
+}
+
+export async function resolveHostGitRepo(
+  workspacePath: string,
+  deps: CloudActionExecutorDeps,
+  remoteName: string,
+): Promise<HostGitRepo> {
+  if (workspacePath.length > 0 && existsSync(workspacePath)) {
+    return { dir: workspacePath, remote: remoteName, scratch: false, cleanup: () => Promise.resolve() };
+  }
+  // No host checkout. Only the REGISTERED origin can be trusted as a push
+  // target — see the `originUrl` doc on CloudActionExecutorDeps.
+  const origin = deps.originUrl?.trim() ?? '';
+  if (origin.length === 0) {
+    throw new Error(
+      `host-side git is unavailable for box ${deps.boxId}: its host repo (${workspacePath || '<unset>'}) does not exist ` +
+        `and the box has no registered origin URL to push to. Adopt the box on a host with a checkout, or re-register it.`,
+    );
+  }
+  const dir = await mkdtemp(join(tmpdir(), 'agentbox-git-scratch-'));
+  const init = await execa('git', ['-C', dir, 'init', '--quiet'], { reject: false });
+  if ((init.exitCode ?? 1) !== 0) {
+    await rm(dir, { recursive: true, force: true });
+    throw new Error(`could not initialize a scratch git repo: ${init.stderr ?? ''}`);
+  }
+  return {
+    dir,
+    remote: origin,
+    scratch: true,
+    cleanup: () => rm(dir, { recursive: true, force: true }),
+  };
+}
+
 async function runGitRpc(action: HostAction, deps: CloudActionExecutorDeps): Promise<HostActionResult> {
   const params = (action.params ?? {}) as GitRpcParams;
   const lookup = await lookupCloudBox(deps.boxId);
@@ -1138,6 +1204,19 @@ async function runGitRpc(action: HostAction, deps: CloudActionExecutorDeps): Pro
   // pull-back steps without the final `git push` — so it skips the confirm
   // gate below entirely. Destination defaults to the box's branch name.
   if (params.hostOnly) {
+    // Unlike push/fetch, this one has nowhere to go without a real checkout —
+    // its whole purpose is to leave the branch in the host's repo. A scratch
+    // repo we delete would be a no-op dressed up as a success.
+    if (lookup.workspacePath.length === 0 || !existsSync(lookup.workspacePath)) {
+      return {
+        exitCode: 64,
+        stdout: '',
+        stderr:
+          `--host-only is unavailable for box ${deps.boxId}: this host has no working copy of the project ` +
+          `(${lookup.workspacePath || '<unset>'} does not exist). Boxes created by a control box have no host ` +
+          `checkout — push to the remote instead, or adopt the box on a machine that has one.\n`,
+      };
+    }
     const dest = resolveLandDest(branch, params.as);
     const stageSave = await mkdtemp(join(tmpdir(), 'agentbox-git-save-'));
     const hostBundleSave = join(stageSave, 'op.bundle');
@@ -1288,6 +1367,17 @@ async function runGitRpc(action: HostAction, deps: CloudActionExecutorDeps): Pro
     }
   }
 
+  const remoteName = resolveRemote(params.remote);
+  let repo: HostGitRepo;
+  try {
+    repo = await resolveHostGitRepo(lookup.workspacePath, deps, remoteName);
+  } catch (err) {
+    return { exitCode: 64, stdout: '', stderr: `${err instanceof Error ? err.message : String(err)}\n` };
+  }
+  if (repo.scratch) {
+    deps.log?.(`git.${action.method === 'git.push' ? 'push' : 'fetch'}: no host checkout for box ${deps.boxId}; using a scratch repo against ${repo.remote}`);
+  }
+
   const stage = await mkdtemp(join(tmpdir(), 'agentbox-git-rpc-'));
   const hostBundle = join(stage, 'op.bundle');
   const remoteBundle = '/tmp/agentbox-rpc.bundle';
@@ -1304,9 +1394,10 @@ async function runGitRpc(action: HostAction, deps: CloudActionExecutorDeps): Pro
       // 2b. Download to host tmp.
       await backend.downloadFile(handle, remoteBundle, hostBundle);
       // 3. Fast-forward the host repo's per-box branch ref to the sandbox tip.
+      //    In a scratch repo this is what materializes the branch at all.
       const fetch = await execa(
         'git',
-        ['-C', lookup.workspacePath, 'fetch', hostBundle, `${branch}:${branch}`],
+        ['-C', repo.dir, 'fetch', hostBundle, `${branch}:${branch}`],
         { reject: false },
       );
       if (fetch.exitCode !== 0) {
@@ -1317,10 +1408,11 @@ async function runGitRpc(action: HostAction, deps: CloudActionExecutorDeps): Pro
         };
       }
       // 4. Real push. Args are user-controlled (`agentbox-ctl git push --
-      // <args>`); pass them through to git on the host. Remote defaults to
-      // 'origin'; the bundle's branch is the explicit refspec.
-      const remote = resolveRemote(params.remote);
-      const argv = ['-C', lookup.workspacePath, 'push', remote, branch];
+      // <args>`); pass them through to git on the host. `repo.remote` is the
+      // caller's remote name against a real checkout, or the registered origin
+      // URL when we're pushing out of a scratch repo (which has no remotes).
+      const remote = repo.remote;
+      const argv = ['-C', repo.dir, 'push', remote, branch];
       argv.push(...sanitizeGitArgs(params.args));
       const push = await execa('git', argv, { reject: false });
       let pushStderr = push.stderr ?? '';
@@ -1333,26 +1425,24 @@ async function runGitRpc(action: HostAction, deps: CloudActionExecutorDeps): Pro
       // local-only by design.
       if ((push.exitCode ?? 1) === 0 && !isScratchBranch(branch)) {
         try {
-          const sha = await execa(
-            'git',
-            ['-C', lookup.workspacePath, 'rev-parse', branch],
-            { reject: false },
-          );
+          const sha = await execa('git', ['-C', repo.dir, 'rev-parse', branch], { reject: false });
           const shaText = (sha.stdout ?? '').trim();
           if (sha.exitCode === 0 && shaText.length > 0) {
+            // These are refs INSIDE the box, so they must use the remote NAME —
+            // `repo.remote` may be a bare URL when we pushed from a scratch repo.
             const updateRef = await backend.exec(
               handle,
-              `git -C ${shellQuote(containerPath)} update-ref ${remoteTrackingRef(remote, branch)} ${shellQuote(shaText)}`,
+              `git -C ${shellQuote(containerPath)} update-ref ${remoteTrackingRef(remoteName, branch)} ${shellQuote(shaText)}`,
             );
             if (updateRef.exitCode !== 0) {
-              pushStderr += `\nrelay: post-push in-box update-ref ${remoteTrackingRef(remote, branch)} failed: ${updateRef.stderr || updateRef.stdout}`;
+              pushStderr += `\nrelay: post-push in-box update-ref ${remoteTrackingRef(remoteName, branch)} failed: ${updateRef.stderr || updateRef.stdout}`;
             }
             const setUpstream = await backend.exec(
               handle,
-              `git -C ${shellQuote(containerPath)} branch --set-upstream-to=${upstreamRef(remote, branch)} ${shellQuote(branch)}`,
+              `git -C ${shellQuote(containerPath)} branch --set-upstream-to=${upstreamRef(remoteName, branch)} ${shellQuote(branch)}`,
             );
             if (setUpstream.exitCode !== 0) {
-              pushStderr += `\nrelay: post-push in-box --set-upstream-to=${upstreamRef(remote, branch)} failed: ${setUpstream.stderr || setUpstream.stdout}`;
+              pushStderr += `\nrelay: post-push in-box --set-upstream-to=${upstreamRef(remoteName, branch)} failed: ${setUpstream.stderr || setUpstream.stdout}`;
             }
           } else {
             pushStderr += `\nrelay: post-push rev-parse ${branch} failed on host; skipping in-box origin/upstream sync`;
@@ -1368,8 +1458,12 @@ async function runGitRpc(action: HostAction, deps: CloudActionExecutorDeps): Pro
       };
     }
     // git.fetch: host fetches origin, bundles, uploads, sandbox fetches.
-    const remote = resolveRemote(params.remote);
-    const hostFetch = await execa('git', ['-C', lookup.workspacePath, 'fetch', remote], { reject: false });
+    // A scratch repo has no configured remote, so fetch the registered URL
+    // straight into the remote-tracking namespace the bundle step reads back.
+    const fetchArgs = repo.scratch
+      ? ['-C', repo.dir, 'fetch', repo.remote, '+refs/heads/*:refs/remotes/origin/*', '--tags']
+      : ['-C', repo.dir, 'fetch', repo.remote];
+    const hostFetch = await execa('git', fetchArgs, { reject: false });
     if (hostFetch.exitCode !== 0) {
       return {
         exitCode: hostFetch.exitCode ?? 1,
@@ -1378,11 +1472,9 @@ async function runGitRpc(action: HostAction, deps: CloudActionExecutorDeps): Pro
       };
     }
     // Bundle origin's remote-tracking refs so the sandbox sees the updates.
-    const bundle = await execa(
-      'git',
-      ['-C', lookup.workspacePath, 'bundle', 'create', hostBundle, `--all`],
-      { reject: false },
-    );
+    const bundle = await execa('git', ['-C', repo.dir, 'bundle', 'create', hostBundle, `--all`], {
+      reject: false,
+    });
     if (bundle.exitCode !== 0) {
       return {
         exitCode: bundle.exitCode ?? 1,
@@ -1402,6 +1494,9 @@ async function runGitRpc(action: HostAction, deps: CloudActionExecutorDeps): Pro
     };
   } finally {
     await rm(stage, { recursive: true, force: true });
+    await repo.cleanup().catch(() => {
+      /* best-effort */
+    });
     await backend
       .exec(handle, `rm -f ${shellQuote(remoteBundle)}`)
       .catch(() => {

@@ -11,6 +11,7 @@ export {
   type EffectiveConfig,
   type EngineKind,
   type GitPushMode,
+  type HubGitAuthMode,
   type IdeFlavor,
   type KeyDescriptor,
   type KeyType,

@@ -97,6 +97,32 @@ export const PROVIDER_SECRET_KEYS = [
   'DIGITALOCEAN_API_URL',
 ] as const;
 
+/**
+ * Split the hub's GitHub token out of the compose `.env`.
+ *
+ * `hub setup --git-auth gh` writes `GH_TOKEN` into `control-plane.env`, but that
+ * file becomes the compose env-file — and a compose `environment:` value is
+ * readable via `docker inspect` and shows up in compose logs. The deploy already
+ * routes provider credentials to the data-volume `secrets.env` for exactly this
+ * reason, so the git token rides along with them instead.
+ *
+ * Returns the remaining env body and the extracted token (if any). Pure.
+ */
+export function splitHubGitToken(envContent: string): { env: string; token: string | null } {
+  const kept: string[] = [];
+  let token: string | null = null;
+  for (const line of envContent.split(/\r?\n/)) {
+    const m = /^(?:export\s+)?GH_TOKEN=(.*)$/.exec(line.trim());
+    if (m) {
+      const value = m[1]?.trim() ?? '';
+      if (value.length > 0) token = value;
+      continue;
+    }
+    kept.push(line);
+  }
+  return { env: kept.join('\n'), token };
+}
+
 /** Filter a `secrets.env` body down to just the allowlisted provider-cred lines. Pure — unit-testable. */
 export function filterProviderSecrets(body: string): string {
   const allow = new Set<string>(PROVIDER_SECRET_KEYS);
@@ -411,6 +437,15 @@ export async function deployControlPlaneToHetzner(
   if (!providerSecrets) {
     log('warning: no provider credentials found in ~/.agentbox/secrets.env — the worker can only create boxes for providers whose creds you push later');
   }
+  // The hub's own git credential travels with the provider secrets, not in the
+  // compose env — see `splitHubGitToken`.
+  const { env: composeEnv, token: hubGitToken } = splitHubGitToken(opts.envContent);
+  const dataSecrets = hubGitToken ? `${providerSecrets}GH_TOKEN=${hubGitToken}\n` : providerSecrets;
+  log(
+    hubGitToken
+      ? 'git auth: shipping the hub GitHub token to the VPS data volume (hub.gitAuth=gh)'
+      : 'git auth: no GitHub token in the deploy env — the hub will need a GitHub App (hub.gitAuth=app)',
+  );
 
   // Stage the secret env + Caddy config locally, then scp them up.
   const staging = join(tmpdir(), `agentbox-cp-deploy-${stamp}`);
@@ -420,10 +455,10 @@ export async function deployControlPlaneToHetzner(
     const caddyLocal = join(staging, 'Caddyfile');
     const composeLocal = join(staging, 'docker-compose.caddy.yml');
     const secretsLocal = join(staging, 'secrets.env');
-    await writeFile(envLocal, opts.envContent + hubEnvExtra, { mode: 0o600 });
+    await writeFile(envLocal, composeEnv + hubEnvExtra, { mode: 0o600 });
     await writeFile(caddyLocal, caddyfile(domain, appPort));
     await writeFile(composeLocal, CADDY_COMPOSE);
-    await writeFile(secretsLocal, providerSecrets, { mode: 0o600 });
+    await writeFile(secretsLocal, dataSecrets, { mode: 0o600 });
     log('creating the persistent data dir on the VPS…');
     await sshExec(target, `mkdir -p ${REMOTE_DATA_DIR} && chmod 700 ${REMOTE_DATA_DIR}`);
     log('uploading env + provider secrets + Caddy config…');

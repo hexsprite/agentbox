@@ -28,7 +28,16 @@ RUN corepack enable
 # VPS-side (git-lfs so an LFS repo's objects fetch over HTTPS with the leased
 # token instead of hard-failing the checkout — `git lfs pull` needs the binary
 # on PATH), and a hetzner box needs ssh/scp on PATH for its ControlMaster.
-RUN apt-get update && apt-get install -y --no-install-recommends git git-lfs openssh-client ca-certificates \
+# `gh` is what makes the hub's own git work in `hub.gitAuth=gh` mode: it backs
+# the credential helper for clone/push (via `gh auth setup-git`) and serves the
+# `gh.pr.*` / `gh.api` host actions, which exited 127 here before. Installed from
+# GitHub's apt repo — Debian's own package lags badly.
+RUN apt-get update && apt-get install -y --no-install-recommends git git-lfs openssh-client ca-certificates curl gnupg \
+  && mkdir -p -m 755 /etc/apt/keyrings \
+  && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+  && chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+  && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list \
+  && apt-get update && apt-get install -y --no-install-recommends gh \
   && rm -rf /var/lib/apt/lists/*
 ENV NODE_ENV=production
 # Queue worker + host-app spawns re-exec the CLI from this entry.

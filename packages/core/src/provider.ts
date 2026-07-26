@@ -174,6 +174,14 @@ export interface CreateBoxRequest {
    * Docker ignores it (always relay).
    */
   gitPushMode?: 'auto' | 'relay' | 'lease' | 'direct';
+  /**
+   * How the box's hub authenticates to GitHub (`hub.gitAuth`). Mirrors config's
+   * `HubGitAuthMode` (core doesn't depend on config). Only `auto` push routing
+   * reads it: an `app` hub can mint a per-box token so the box leases, while a
+   * `gh` hub holds one broad token it must never hand out, so the box pushes
+   * through the relay instead.
+   */
+  hubGitAuth?: 'gh' | 'app';
   /** Provider-specific knobs (docker: sharedCache/portless; daytona: resources/region). */
   providerOptions?: Record<string, unknown>;
   onLog?: (line: string) => void;

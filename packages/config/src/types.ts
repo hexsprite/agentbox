@@ -39,6 +39,24 @@ export type ClaudeInstallMethod = 'native' | 'npm';
  * Docker boxes ignore this (always `relay` — they bind-mount the host `.git`).
  */
 export type GitPushMode = 'auto' | 'relay' | 'lease' | 'direct';
+/**
+ * Which git credential a deployed hub (control box) uses on your behalf.
+ *
+ * - `gh` (default) — the hub holds a GitHub token (taken from your own `gh`
+ *   login at `hub setup`) and does the git work itself: boxes ask it to push via
+ *   the relay's bundle path and never receive a credential at all. Nothing has to
+ *   be installed or approved on the GitHub side, so it works on repos you only
+ *   collaborate on and in orgs where you can't install an App.
+ * - `app` — the hub holds a GitHub App private key and leases a 1-hour,
+ *   single-repo installation token to each box on every push. Tighter (the token
+ *   is narrow and short-lived) but it requires the repo OWNER to install the App,
+ *   which in most work orgs is an admin decision.
+ *
+ * This is deploy intent: it selects what `hub setup` / `hub deploy` provisions,
+ * and which push mode a cloud box is given. It cannot reconfigure a hub that is
+ * already running — change it there and redeploy, or set the token on the hub.
+ */
+export type HubGitAuthMode = 'gh' | 'app';
 /** Where `agentbox claude|codex|opencode` opens the attached session when the host
  *  shell is running inside tmux, cmux, Herdr, or iTerm2. `same` keeps today's inline behavior. */
 export type AttachOpenIn = 'split' | 'window' | 'tab' | 'same';
@@ -201,6 +219,9 @@ export interface UserConfig {
   };
   git?: {
     pushMode?: GitPushMode;
+  };
+  hub?: {
+    gitAuth?: HubGitAuthMode;
   };
   vnc?: {
     containerPort?: number;
@@ -369,6 +390,9 @@ export interface EffectiveConfig {
   };
   git: {
     pushMode: GitPushMode;
+  };
+  hub: {
+    gitAuth: HubGitAuthMode;
   };
   vnc: {
     containerPort: number;
@@ -561,6 +585,9 @@ export const BUILT_IN_DEFAULTS: EffectiveConfig = {
   },
   git: {
     pushMode: 'auto',
+  },
+  hub: {
+    gitAuth: 'gh',
   },
   vnc: {
     containerPort: 6080,
@@ -1009,6 +1036,13 @@ export const KEY_REGISTRY: readonly KeyDescriptor[] = [
     enumValues: ['auto', 'relay', 'lease', 'direct'] as const,
     description:
       "How a box's `git push` reaches GitHub: `relay` (the host relay pushes with your host credentials — they never enter the box), `lease` (the relay/plane leases a short-lived GitHub-App token and the box pushes directly, so it works with the laptop off), `direct` (the box holds a COPY of your git credentials and pushes/pulls/signs entirely on its own — needs no host or hub, but the credentials live inside the box and its snapshots; set via `--with-credentials`, which copies them in behind a confirmation), or `auto` (default — lease when `relay.controlPlaneUrl` is set for the box, else relay). Only affects cloud boxes; docker boxes always use `relay`. Forcing `relay` needs a reachable host relay for the box; forcing `lease` needs a reachable relay/plane with a GitHub App; `direct` needs credentials to have been copied into the box at create time.",
+  },
+  {
+    key: 'hub.gitAuth',
+    type: 'enum',
+    enumValues: ['gh', 'app'] as const,
+    description:
+      "Which git credential a deployed hub (control box) uses: `gh` (default — the hub holds a GitHub token taken from your own `gh` login and does the git work itself, so boxes never receive a credential and nothing needs installing or approving on GitHub) or `app` (the hub holds a GitHub App private key and leases a 1-hour, single-repo token to each box, which is tighter but requires the repo owner to install the App). Deploy intent: it selects what `agentbox hub setup` / `hub deploy` provisions and which push mode a cloud box gets — it cannot reconfigure a hub that is already running.",
   },
   {
     key: 'vnc.containerPort',

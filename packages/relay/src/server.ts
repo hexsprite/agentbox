@@ -692,6 +692,7 @@ export function createRelayServer(opts: RelayServerOptions): RelayServerHandle {
             subscribers,
             hostInitiatedTokens,
             autoApproveSafeHostActions: reg.autoApproveSafeHostActions,
+            originUrl: reg.originUrl,
             log,
           });
           send(res, result.exitCode === 0 ? 200 : 500, result);
@@ -1277,6 +1278,7 @@ export function createRelayServer(opts: RelayServerOptions): RelayServerHandle {
                       subscribers,
                       hostInitiatedTokens,
                       autoApproveSafeHostActions: reg.autoApproveSafeHostActions,
+                      originUrl: reg.originUrl,
                       log,
                     });
                     await respond(result);

@@ -16,6 +16,7 @@ import next from 'next';
 import { makeStore, FsCustodyStore, type Store, type CustodyStore } from '@agentbox/relay/control-plane';
 import { startRelayDaemon } from '@agentbox/relay/daemon';
 import { createHubBackend } from './lib/hub-backend';
+import { configureHubGitCredentials } from './lib/git-auth';
 
 const dev = process.env.NODE_ENV !== 'production';
 const port = Number.parseInt(process.env.AGENTBOX_HUB_PORT ?? '8787', 10);
@@ -98,6 +99,19 @@ async function main(): Promise<void> {
   // loginless localhost hub simply never serves the routes.
   const adminToken = process.env.AGENTBOX_RELAY_ADMIN_TOKEN ?? '';
   const custody: CustodyStore | undefined = adminToken.length > 0 ? new FsCustodyStore() : undefined;
+
+  // `hub.gitAuth=gh`: make the stored GitHub token visible to git and `gh`
+  // before anything can need it — the create worker clones with it, and the
+  // relay's bundle path pushes with it. Must run before startRelayDaemon, whose
+  // executor can service a git RPC as soon as it is listening.
+  const gitAuth = await configureHubGitCredentials((line) =>
+    process.stdout.write(`agentbox-hub: ${line}\n`),
+  );
+  if (gitAuth === 'no-token') {
+    process.stdout.write(
+      'agentbox-hub: no GitHub token stored — git push/clone will only work if a GitHub App is configured (hub.gitAuth=app)\n',
+    );
+  }
 
   const daemon = await startRelayDaemon({
     port,

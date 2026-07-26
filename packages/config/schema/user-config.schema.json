@@ -175,6 +175,13 @@
         "pushMode": { "enum": ["auto", "relay", "lease", "direct"] }
       }
     },
+    "hub": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "gitAuth": { "enum": ["gh", "app"] }
+      }
+    },
     "cloud": {
       "type": "object",
       "additionalProperties": false,

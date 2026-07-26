@@ -622,6 +622,7 @@ export const createCommand = new Command('create')
         // Cloud-only in effect; the docker provider ignores it.
         controlPlaneUrl: cfg.effective.relay.controlPlaneUrl,
         gitPushMode: cfg.effective.git.pushMode,
+        hubGitAuth: cfg.effective.hub.gitAuth,
         projectRoot,
         onLog: (line) => {
           s.message(line);

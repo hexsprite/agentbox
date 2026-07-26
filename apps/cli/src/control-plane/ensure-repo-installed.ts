@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { execa } from 'execa';
-import type { GitPushMode } from '@agentbox/config';
+import type { GitPushMode, HubGitAuthMode } from '@agentbox/config';
 import { GitHubAppLeaser, loadGitHubAppConfig, parseGitRemote } from '@agentbox/relay';
 import { hostOpenCommand } from '@agentbox/sandbox-core';
 
@@ -130,6 +130,7 @@ function writeReposState(state: ReposState): void {
 export async function ensureProjectRepoOnControlPlane(args: {
   controlPlaneUrl: string | undefined;
   gitPushMode?: GitPushMode;
+  hubGitAuth?: HubGitAuthMode;
   projectRoot: string;
   yes?: boolean;
 }): Promise<void> {
@@ -139,6 +140,10 @@ export async function ensureProjectRepoOnControlPlane(args: {
   // doesn't need to be authorized on the control plane's GitHub App — skip the
   // check/nag. (`direct` uses credentials copied straight into the box.)
   if (args.gitPushMode === 'relay' || args.gitPushMode === 'direct') return;
+  // Same for a `gh`-mode hub: there is no App to authorize a repo on — the hub
+  // pushes for the box with its own token. Nagging there sent users to an
+  // install page for an App that doesn't exist.
+  if ((args.hubGitAuth ?? 'gh') !== 'app') return;
   const ownerRepo = await resolveOwnerRepo(projectRoot);
   if (!ownerRepo) return;
   const { owner, repo } = ownerRepo;

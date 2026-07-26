@@ -1,7 +1,10 @@
-import { homedir } from 'node:os';
+import { execa } from 'execa';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
-import { executeCloudAction, resolveHostPath } from '../src/host-actions.js';
+import { afterEach, describe, expect, it } from 'vitest';
+import { executeCloudAction, resolveHostGitRepo, resolveHostPath } from '../src/host-actions.js';
 import type { HostAction } from '../src/types.js';
 
 /**
@@ -214,5 +217,61 @@ describe('executeCloudAction routing', () => {
     // the spawn), now it hits it during the gate. Either way the error
     // mentions `state.json`, so existing observed-behavior parity holds.
     expect(r.stderr).toContain('state.json');
+  });
+});
+
+/**
+ * A control box has no working copy of any project: the create worker clones
+ * into a temp dir and deletes it in a `finally`, so `BoxRecord.workspacePath`
+ * points at a path that no longer exists. Before this, `runGitRpc` ran
+ * `git -C <deleted path>` and surfaced a raw ENOENT. It now falls back to a
+ * throwaway repo and pushes to the box's REGISTERED origin — never one the box
+ * supplied, which could redirect the host's credentials to an attacker.
+ */
+describe('resolveHostGitRepo', () => {
+  const made: string[] = [];
+  afterEach(async () => {
+    await Promise.all(made.splice(0).map((d) => rm(d, { recursive: true, force: true })));
+  });
+
+  const deps = (originUrl?: string): Parameters<typeof resolveHostGitRepo>[1] => ({
+    backendName: 'daytona',
+    boxId: 'box1',
+    originUrl,
+  });
+
+  it('uses the real checkout when one exists, and does not touch the origin', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'agentbox-hgr-real-'));
+    made.push(dir);
+    const repo = await resolveHostGitRepo(dir, deps('https://github.com/o/r.git'), 'origin');
+    expect(repo).toMatchObject({ dir, remote: 'origin', scratch: false });
+    // Cleanup is a no-op for a real checkout — it must never delete the user's repo.
+    await repo.cleanup();
+    expect(existsSync(dir)).toBe(true);
+  });
+
+  it('creates a real git repo pointed at the registered origin when the checkout is gone', async () => {
+    const gone = join(tmpdir(), 'agentbox-hgr-does-not-exist-xyz');
+    const repo = await resolveHostGitRepo(gone, deps('https://github.com/o/r.git'), 'origin');
+    made.push(repo.dir);
+    expect(repo.scratch).toBe(true);
+    // The push target is the URL, not the remote NAME: a scratch repo has no remotes.
+    expect(repo.remote).toBe('https://github.com/o/r.git');
+    expect(repo.dir).not.toBe(gone);
+    const inside = await execa('git', ['-C', repo.dir, 'rev-parse', '--git-dir'], { reject: false });
+    expect(inside.exitCode).toBe(0);
+    await repo.cleanup();
+    expect(existsSync(repo.dir)).toBe(false);
+  });
+
+  it('refuses rather than guessing when there is no checkout and no registered origin', async () => {
+    const gone = join(tmpdir(), 'agentbox-hgr-does-not-exist-xyz');
+    await expect(resolveHostGitRepo(gone, deps(undefined), 'origin')).rejects.toThrow(
+      /no registered origin URL/,
+    );
+    // Whitespace-only is treated as absent, not as a push target.
+    await expect(resolveHostGitRepo(gone, deps('   '), 'origin')).rejects.toThrow(
+      /no registered origin URL/,
+    );
   });
 });

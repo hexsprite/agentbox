@@ -201,6 +201,13 @@ export interface CloudBoxFields {
    * config changed. Mirrors config's `GitPushMode`.
    */
   gitPushMode?: 'auto' | 'relay' | 'lease' | 'direct';
+  /**
+   * The hub's git-auth mode at create time (`hub.gitAuth`). Persisted for the
+   * same reason as `gitPushMode`: a resume re-kick must re-derive the same
+   * routing even if the host config has since changed. Mirrors config's
+   * `HubGitAuthMode`.
+   */
+  hubGitAuth?: 'gh' | 'app';
 }
 
 /**

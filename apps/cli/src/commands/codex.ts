@@ -551,6 +551,7 @@ export const codexCommand = new Command('codex')
     await ensureProjectRepoOnControlPlane({
       controlPlaneUrl: cfg.effective.relay.controlPlaneUrl,
       gitPushMode: cfg.effective.git.pushMode,
+      hubGitAuth: cfg.effective.hub.gitAuth,
       projectRoot,
       yes: !!opts.yes,
     });
@@ -784,6 +785,7 @@ export const codexCommand = new Command('codex')
           // so cloud boxes from the agent commands honor the same config.
           controlPlaneUrl: cfg.effective.relay.controlPlaneUrl,
           gitPushMode: cfg.effective.git.pushMode,
+          hubGitAuth: cfg.effective.hub.gitAuth,
           // Per-provider session-lifetime (e2b/vercel timeout); mirrors create.
           providerOptions: cloudSizingProviderOptions(provider.name, cfg.effective, {
             remoteHost,
