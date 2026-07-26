@@ -200,6 +200,7 @@ export {
   generateRelayToken,
   getRelayStatus,
   mintHostInitiatedToken,
+  pauseBoxOnRelay,
   registerBoxWithRelay,
   rehydrateRelayRegistry,
   resolveRelayBin,

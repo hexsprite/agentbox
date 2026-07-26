@@ -18,7 +18,16 @@
  * and this host polls every cloud box's preview URL continuously, so its clock
  * never runs out and an idle box would bill forever. For those backends
  * (`CloudBackend.timeoutModel === 'inactivity'`) the loop performs the stop
- * itself: see `selectBoxesToIdlePause`.
+ * itself: see `selectBoxesToIdlePause`. It also tears down the box's
+ * `CloudBoxPoller` (`deps.stopPoller`) — otherwise the polling that caused the
+ * problem simply carries on against the box we just paused. On sprites, which
+ * has no pause API at all, stopping the poller IS the pause: the sandbox
+ * sleeps on its own once nothing is talking to it.
+ *
+ * The two halves have different capability requirements — renewal needs
+ * `renewTimeout`, idle-pause needs `pause` + `timeoutModel: 'inactivity'` — so
+ * the shared per-tick scan gates only on "the backend resolved at all", and
+ * each half checks what it actually needs.
  *
  * The additive-vs-absolute SDK split (vercel `extendTimeout` adds to the
  * current deadline and can't read remaining; e2b `setTimeout` sets TTL from
@@ -191,6 +200,12 @@ export interface CloudKeepaliveLoopDeps {
   lookupBox?: (boxId: string) => Promise<CloudBoxLookup | null>;
   /** Injectable for tests; defaults to writing `cloud.lastState: 'paused'`. */
   persistPaused?: (boxId: string) => Promise<void>;
+  /**
+   * Tear down a box's `CloudBoxPoller` after we idle-pause it. Wired to
+   * `RelayServerHandle.stopCloudPoller` by the daemon; defaults to a no-op so
+   * a caller that doesn't own pollers (tests, the box-mode relay) still works.
+   */
+  stopPoller?: (boxId: string) => Promise<void>;
   /** Injectable for tests; fallback create timeout when a record lacks one. */
   fallbackCreateTimeoutMs?: (backend: string) => Promise<number>;
   /** Injectable for tests; defaults to `Date.now`. */
@@ -214,6 +229,7 @@ export function startCloudKeepaliveLoop(
   const resolveBackend = deps.resolveBackend ?? resolveCloudBackend;
   const lookupBox = deps.lookupBox ?? defaultLookupBox;
   const persistPaused = deps.persistPaused ?? defaultPersistPaused;
+  const stopPoller = deps.stopPoller ?? ((): Promise<void> => Promise.resolve());
   const fallbackCreateTimeoutMs = deps.fallbackCreateTimeoutMs ?? defaultFallbackCreateTimeoutMs;
   const nowFn = deps.now ?? Date.now;
   const intervalMs = deps.intervalMs ?? DEFAULT_INTERVAL_MS;
@@ -262,7 +278,13 @@ export function startCloudKeepaliveLoop(
       for (const reg of registry.list()) {
         if (reg.kind !== 'cloud' || !reg.backend) continue;
         const backend = await resolveCached(reg.backend);
-        if (!backend || typeof backend.renewTimeout !== 'function') continue;
+        // Only "no executor at all" disqualifies a box here. The two halves
+        // below have DIFFERENT capability requirements — renewal needs
+        // `renewTimeout`, idle-pause needs `pause` + `timeoutModel:
+        // 'inactivity'` — so gating the shared scan on `renewTimeout` would
+        // silently exclude a backend that has no session deadline to renew but
+        // very much needs the idle-pause half (sprites).
+        if (!backend) continue;
         live.add(reg.boxId);
         const active = readActiveAgent(statusStore.get(reg.boxId));
         entries.push({
@@ -282,6 +304,12 @@ export function startCloudKeepaliveLoop(
       for (const d of decisions) {
         const until = backoffUntil.get(d.boxId);
         if (until != null && now < until) continue; // recently failed — wait
+
+        // No renew primitive → nothing to extend. Checked BEFORE the record
+        // lookup and the deadline seeding so a backend without a session
+        // deadline (sprites) costs no I/O and never populates `tracked`.
+        const renewBackend = await resolveCached(d.backend);
+        if (typeof renewBackend?.renewTimeout !== 'function') continue;
 
         const lookup = await lookupBox(d.boxId);
         if (!lookup) continue;
@@ -358,6 +386,18 @@ export function startCloudKeepaliveLoop(
           });
           idlePaused.set(boxId, e.lastActivityMs);
           backoffUntil.delete(boxId);
+          // Stop long-polling the box we just paused. Two reasons, both
+          // load-bearing:
+          //   - A paused sandbox can't answer, so every poll is a wasted
+          //     round-trip that also drives `recoverPreviewUrl` storms.
+          //   - On a backend with NO pause primitive (sprites, whose `pause()`
+          //     only records state) our own polling is the sole reason the
+          //     sandbox stays awake. Leaving it running means the box never
+          //     sleeps and bills indefinitely — the pause above would be a lie.
+          // Resume re-registers the box (`reEnsureCloudBox`), which starts a
+          // fresh poller against the new preview URL. Best-effort, and after
+          // the pause is already a fact.
+          await stopPoller(boxId).catch(() => {});
           // Best-effort, and deliberately after the pause is already a fact: a
           // failed record write must not look like a failed pause and re-arm.
           await persistPaused(boxId).catch(() => {});

@@ -33,6 +33,10 @@ export async function startRelayDaemon(opts: RelayServerOptions): Promise<RelayD
     registry: handle.registry,
     statusStore: handle.statusStore,
     log,
+    // A box the loop idle-pauses must also stop being polled — see the
+    // keepalive header. Only the server owns the poller set, so it's threaded
+    // in rather than re-derived.
+    stopPoller: (boxId) => handle.stopCloudPoller(boxId),
   });
   const queue = startQueueLoop({
     log,

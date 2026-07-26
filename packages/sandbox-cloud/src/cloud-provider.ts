@@ -55,6 +55,7 @@ import {
   forgetBoxFromRelay,
   generateRelayToken,
   generateVncPassword,
+  pauseBoxOnRelay,
   portlessAlias,
   portlessGetUrl,
   portlessUnalias,
@@ -1252,6 +1253,7 @@ export function createCloudProvider(
 
     async pause(box: BoxRecord): Promise<void> {
       await backend.pause(handleFor(box));
+      await pauseBoxOnRelay(box.id);
       await persistLastState(box, 'paused');
     },
 
@@ -1268,6 +1270,7 @@ export function createCloudProvider(
 
     async stop(box: BoxRecord): Promise<void> {
       await backend.stop(handleFor(box));
+      await pauseBoxOnRelay(box.id);
       await persistLastState(box, 'paused');
     },
 

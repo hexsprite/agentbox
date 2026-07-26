@@ -731,6 +731,25 @@ export async function forgetBoxFromRelay(boxId: string): Promise<void> {
 }
 
 /**
+ * Tell the relay a cloud box has been paused/stopped, so it tears down that
+ * box's `CloudBoxPoller` while keeping the registration (resume re-registers
+ * with a fresh preview URL).
+ *
+ * Load-bearing for `inactivity`-model backends: the poller's long-poll is
+ * traffic the sandbox sees, so on daytona it resets the idle clock and on
+ * sprites — which has no pause API at all — it is the only thing keeping the
+ * sandbox awake and billing. Best-effort: an unreachable or older relay must
+ * not fail the pause itself.
+ */
+export async function pauseBoxOnRelay(boxId: string): Promise<void> {
+  try {
+    await adminPost('/admin/pause-box', { boxId });
+  } catch {
+    // best-effort — an older relay has no such route
+  }
+}
+
+/**
  * Best-effort: register an informational notice for a box so attached
  * `agentbox claude` footers / the dashboard show it (e.g. a spinner while a
  * checkpoint freezes the box). Returns the notice id, or null when the relay

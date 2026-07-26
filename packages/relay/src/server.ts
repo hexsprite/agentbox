@@ -169,6 +169,15 @@ export interface RelayServerHandle {
    * `setQueuePoke` has wired the scheduler.
    */
   pokeQueue: () => void;
+  /**
+   * Stop one cloud box's `CloudBoxPoller`, keeping its registration intact.
+   * Called by the keepalive loop after it idle-pauses a box: the poller's
+   * long-poll is what keeps an `inactivity`-model sandbox (daytona) awake, and
+   * on a backend with no pause API at all (sprites) it is the ONLY thing
+   * standing between an idle box and an unbounded bill. Resume re-registers
+   * (`reEnsureCloudBox`), which starts a fresh poller.
+   */
+  stopCloudPoller: (boxId: string) => Promise<void>;
   close: () => Promise<void>;
 }
 
@@ -253,6 +262,7 @@ function isLoopbackAddress(addr: string | undefined): boolean {
  *   POST /rpc                   — bearer auth; dispatches git.push/fetch, cp.*, download.*, checkpoint.create on the host.
  *   POST /admin/register-box    — loopback only.
  *   POST /admin/forget-box      — loopback only.
+ *   POST /admin/pause-box       — loopback only; stops the box's cloud poller, keeps its registration.
  *   GET  /admin/box-status      — loopback only; query `box`; latest snapshot.
  *   GET  /admin/events          — loopback only; query `box`, `since`.
  *   GET  /admin/registry        — loopback only; list registered boxes (token redacted).
@@ -337,8 +347,8 @@ export function createRelayServer(opts: RelayServerOptions): RelayServerHandle {
   const uiHandler = opts.uiHandler;
 
   // Host-mode pollers for cloud-tagged boxes; started on /admin/register-box,
-  // stopped on /admin/forget-box. Lazy import to keep host-mode startup free
-  // of cloud-poller deps until actually needed.
+  // stopped on /admin/forget-box and /admin/pause-box. Lazy import to keep
+  // host-mode startup free of cloud-poller deps until actually needed.
   type CloudPollersModule = typeof import('./cloud-poller.js');
   let pollers: InstanceType<CloudPollersModule['CloudBoxPollers']> | null = null;
   async function getPollers(): Promise<InstanceType<CloudPollersModule['CloudBoxPollers']>> {
@@ -347,6 +357,18 @@ export function createRelayServer(opts: RelayServerOptions): RelayServerHandle {
       pollers = new mod.CloudBoxPollers();
     }
     return pollers;
+  }
+
+  /**
+   * Tear down one box's `CloudBoxPoller` without dropping its registration.
+   * No-op when no poller was ever started (docker boxes, or a cloud box
+   * registered before the poller module loaded). Exposed on the handle so the
+   * in-process keepalive loop can stop polling a box it just paused, and
+   * reachable over `POST /admin/pause-box` for the CLI-driven pause/stop.
+   */
+  async function stopCloudPoller(boxId: string): Promise<void> {
+    if (!pollers) return;
+    await pollers.stop(boxId);
   }
 
   const server = createServer((req, res) => {
@@ -1147,6 +1169,21 @@ export function createRelayServer(opts: RelayServerOptions): RelayServerHandle {
       return;
     }
 
+    if (route === 'POST /admin/pause-box') {
+      const body = await readJsonBody<{ boxId?: string }>(req);
+      if (!body || typeof body.boxId !== 'string' || body.boxId.length === 0) {
+        send(res, 400, { error: 'expected {boxId}' });
+        return;
+      }
+      // Keep the registration (resume re-registers with a fresh preview URL);
+      // only tear the poller down. A paused box can't answer a long-poll, and
+      // on an `inactivity`-model backend our polling is itself the thing
+      // keeping it awake and billing — see `CloudBackend.timeoutModel`.
+      await stopCloudPoller(body.boxId);
+      send(res, 204, null);
+      return;
+    }
+
     if (route === 'POST /admin/forget-box') {
       const body = await readJsonBody<{ boxId?: string }>(req);
       if (!body || typeof body.boxId !== 'string' || body.boxId.length === 0) {
@@ -1464,6 +1501,7 @@ export function createRelayServer(opts: RelayServerOptions): RelayServerHandle {
     pokeQueue: () => {
       queuePoke?.();
     },
+    stopCloudPoller,
     close: async () => {
       if (pollers) await pollers.stopAll();
       await new Promise<void>((resolve, reject) => {

@@ -174,7 +174,7 @@ describe('startCloudKeepaliveLoop', () => {
     expect(calls).toEqual([{ id: 'sb-123', target: NOW + WINDOW, current: NOW }]);
   });
 
-  it('skips docker boxes and backends without renewTimeout', async () => {
+  it('does no record I/O for docker boxes or for a backend that cannot renew', async () => {
     const registry = new BoxRegistry();
     registry.register({
       boxId: 'd1',
@@ -321,6 +321,101 @@ describe('startCloudKeepaliveLoop', () => {
     await got.promise;
     await loop.stop();
     expect(paused).toEqual(['sb-123']);
+  });
+
+  // Regression: the per-tick scan used to require `renewTimeout` before a box
+  // was considered at all, which silently excluded it from the idle-pause half
+  // too. A backend with no session deadline to renew but an inactivity timeout
+  // it can't enforce while we poll (sprites) then billed forever.
+  it('idle-pauses a box on a backend that has pause but no renewTimeout', async () => {
+    const registry = new BoxRegistry();
+    registerCloud(registry, 'b1', 'sprites');
+    const paused: string[] = [];
+    const got = deferred<void>();
+    const backend = {
+      name: 'sprites',
+      timeoutModel: 'inactivity',
+      pause: async (h: CloudHandle) => {
+        paused.push(h.sandboxId);
+        got.resolve();
+      },
+    } as unknown as CloudBackend;
+
+    const loop = startCloudKeepaliveLoop({
+      registry,
+      statusStore: idleStatus(WINDOW + 60_000),
+      log: () => {},
+      intervalMs: 5,
+      now: () => NOW,
+      loadConfig: async () => CFG,
+      resolveBackend: async () => backend,
+      lookupBox: lookupIdleWindow,
+    });
+
+    await got.promise;
+    await loop.stop();
+    expect(paused).toEqual(['sb-123']);
+  });
+
+  // Regression: pausing without stopping the poller leaves the long-poll
+  // running against the box we just paused. On a backend whose `pause()` has
+  // no platform primitive behind it (sprites), that traffic is the only reason
+  // the sandbox stays awake — so the pause would be a no-op and the box bills.
+  it('stops the box poller after an idle pause', async () => {
+    const registry = new BoxRegistry();
+    registerCloud(registry, 'b1', 'daytona');
+    const stopped: string[] = [];
+    const got = deferred<void>();
+    const backend = inactivityBackend(() => {});
+
+    const loop = startCloudKeepaliveLoop({
+      registry,
+      statusStore: idleStatus(WINDOW + 60_000),
+      log: () => {},
+      intervalMs: 5,
+      now: () => NOW,
+      loadConfig: async () => CFG,
+      resolveBackend: async () => backend,
+      lookupBox: lookupIdleWindow,
+      stopPoller: async (boxId: string) => {
+        stopped.push(boxId);
+        got.resolve();
+      },
+    });
+
+    await got.promise;
+    await loop.stop();
+    expect(stopped).toEqual(['b1']);
+  });
+
+  it('still records the pause when stopping the poller fails', async () => {
+    const registry = new BoxRegistry();
+    registerCloud(registry, 'b1', 'daytona');
+    const recorded: string[] = [];
+    const got = deferred<void>();
+    const backend = inactivityBackend(() => {});
+
+    const loop = startCloudKeepaliveLoop({
+      registry,
+      statusStore: idleStatus(WINDOW + 60_000),
+      log: () => {},
+      intervalMs: 5,
+      now: () => NOW,
+      loadConfig: async () => CFG,
+      resolveBackend: async () => backend,
+      lookupBox: lookupIdleWindow,
+      stopPoller: async () => {
+        throw new Error('poller set not initialized');
+      },
+      persistPaused: async (boxId: string) => {
+        recorded.push(boxId);
+        got.resolve();
+      },
+    });
+
+    await got.promise;
+    await loop.stop();
+    expect(recorded).toEqual(['b1']);
   });
 
   it('passes the recorded sandbox class to pause (daytona archives a container, freezes a VM)', async () => {
